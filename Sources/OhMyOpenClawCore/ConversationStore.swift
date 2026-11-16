@@ -175,13 +175,18 @@ public struct ConversationStore: Codable, Sendable {
     @discardableResult public mutating func applyChatEvent(_ payload: JSONValue) -> Bool {
         guard let key = payload["sessionKey"].stringValue, let runID = payload["runId"].stringValue,
               let session = matchingSession(key: key, agentID: payload["agentId"].stringValue) else { return false }
+        let state = payload["state"].stringValue ?? ""
+        let terminal = ["final", "aborted", "error"].contains(state)
+        if let target = pending[runID]?.target, target.id != session.id || target.sessionID != session.sessionID {
+            // The old receipt may settle, but its stream cannot mutate the replacement conversation.
+            if terminal { acknowledge(runID) }
+            return false
+        }
         if let seq = payload["seq"].intValue {
             let sequenceKey = session.id + "|" + runID
             if let prior = runSequences[sequenceKey], seq <= prior { return false }
             runSequences[sequenceKey] = seq
         }
-        let state = payload["state"].stringValue ?? ""
-        let terminal = ["final", "aborted", "error"].contains(state)
         if state == "status" {
             activeRunIDs[session.id] = runID; activities[session.id] = .working; return true
         }

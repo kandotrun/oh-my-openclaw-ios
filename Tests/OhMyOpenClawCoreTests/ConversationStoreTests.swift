@@ -146,6 +146,43 @@ private func chat(_ state: String, run: String = "run", session: ChatSession = m
     #expect(throws: GatewayFailure.self) { try store.retrySubmission(old.id) }
 }
 
+@Test func bufferedEventsForAReplacedPhysicalSubmissionCannotRepopulateItsTranscript() throws {
+    var store = fixtureStore()
+    store.setDraft(ComposerDraft(text: "original input"), for: main.id)
+    let old = try store.prepareSubmission(for: main, policy: .null)
+    var replacement = main; replacement.sessionID = "replacement"
+    store.upsertSession(replacement)
+    for (index, state) in ["status", "delta", "final", "aborted", "error"].enumerated() {
+        let applied = store.applyChatEvent(chat(state, run: old.id, seq: index + 1, extra: ["deltaText": .string("old response")]))
+        #expect(!applied)
+        #expect(store.selectedMessages.isEmpty)
+        #expect(store.activeRunIDs[replacement.id] == nil)
+        #expect(store.activities[replacement.id] == .idle)
+        #expect(store.selectedDraft.text == "original input")
+    }
+    #expect(store.pending[old.id]?.accepted == true)
+    #expect(store.pending[old.id]?.params == old.params)
+}
+
+@Test func bufferedOldEventsCannotReplaceTheNewPhysicalSessionsActiveRun() throws {
+    var store = fixtureStore()
+    store.setDraft(ComposerDraft(text: "same input"), for: main.id)
+    let old = try store.prepareSubmission(for: main, policy: .null)
+    var replacement = main; replacement.sessionID = "replacement"
+    store.upsertSession(replacement)
+    let current = try store.prepareSubmission(for: replacement, policy: .null)
+    let currentRows = store.selectedMessages
+    for (index, state) in ["status", "delta", "final"].enumerated() {
+        store.applyChatEvent(chat(state, run: old.id, seq: index + 1, extra: ["deltaText": .string("old response")]))
+        #expect(store.selectedMessages == currentRows)
+        #expect(store.activeRunIDs[replacement.id] == current.id)
+        #expect(store.activities[replacement.id] == .working)
+        #expect(store.selectedDraft.text == "same input")
+    }
+    #expect(store.pending[old.id]?.accepted == true)
+    #expect(store.pending[current.id]?.accepted == false)
+}
+
 @Test func settlingAnOldSubmissionCannotClearANewerActiveRun() throws {
     var store = fixtureStore()
     store.setDraft(ComposerDraft(text: "A"), for: main.id)
