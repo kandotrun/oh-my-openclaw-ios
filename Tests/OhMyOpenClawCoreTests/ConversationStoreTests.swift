@@ -113,3 +113,54 @@ private func chat(_ state: String, run: String = "run", session: ChatSession = m
     #expect(store.selectedMessages.isEmpty)
     #expect(store.selectedDraft.text == "composing")
 }
+
+@Test func replacementHistoryDoesNotImportAnOlderPhysicalSubmission() throws {
+    var store = fixtureStore()
+    store.setDraft(ComposerDraft(text: "original physical input"), for: main.id)
+    let old = try store.prepareSubmission(for: main, policy: .null)
+    store.markUncertain(old.id)
+    var replaced = main; replaced.sessionID = "replacement"
+    store.upsertSession(replaced)
+    store.applyHistory(.object(["sessionId": .string("replacement"), "messages": .array([])]), for: replaced)
+    #expect(store.selectedMessages.isEmpty)
+    #expect(store.pending[old.id]?.params == old.params)
+    #expect(throws: GatewayFailure.self) { try store.retrySubmission(old.id) }
+}
+
+@Test func settlingAnOldSubmissionCannotClearANewerActiveRun() throws {
+    var store = fixtureStore()
+    store.setDraft(ComposerDraft(text: "A"), for: main.id)
+    let old = try store.prepareSubmission(for: main, policy: .null)
+    store.markUncertain(old.id)
+    store.setDraft(ComposerDraft(text: "B"), for: main.id)
+    let running = try store.prepareSubmission(for: main, policy: .null)
+    store.markUncertain(old.id)
+    #expect(store.activeRunIDs[main.id] == running.id)
+    #expect(store.activities[main.id] == .working)
+}
+
+@Test func oldAcknowledgmentCannotClearTheReplacementSessionsDraft() throws {
+    var store = fixtureStore()
+    store.setDraft(ComposerDraft(text: "same text"), for: main.id)
+    let old = try store.prepareSubmission(for: main, policy: .null)
+    var replacement = main; replacement.sessionID = "replacement"
+    store.upsertSession(replacement)
+    store.acknowledge(old.id)
+    #expect(store.selectedDraft.text == "same text")
+    #expect(store.pending[old.id]?.accepted == true)
+}
+
+@Test func materializationRestoresTheReservedInputAfterAnOverlappingHistoryRead() throws {
+    var store = ConversationStore()
+    let emptyMain = ChatSession(key: main.key, agentID: main.agentID, title: "Main", isMain: true)
+    store.upsertSession(emptyMain); store.selectedID = emptyMain.id
+    store.setDraft(ComposerDraft(text: "captured input"), for: emptyMain.id)
+    let submission = try store.prepareSubmission(for: emptyMain, policy: .null)
+    store.upsertSession(main)
+    store.applyHistory(.object(["sessionId": .string(main.sessionID!), "messages": .array([])]), for: main)
+    #expect(store.selectedMessages.isEmpty)
+    let bound = try store.materializeSubmission(submission.id, as: main)
+    #expect(store.selectedMessages.first?.id == submission.message.id)
+    #expect(store.selectedMessages.first?.text == "captured input")
+    #expect(bound.params["sessionId"].stringValue == main.sessionID)
+}

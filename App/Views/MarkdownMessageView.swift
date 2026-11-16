@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import OhMyOpenClawCore
 
 /// Block layout stays native while Foundation handles inline Markdown and links.
 /// Code is always literal and never evaluated or loaded into a web view.
@@ -78,51 +79,5 @@ private struct CodeBlockView: View {
         }
         .background(ChatTheme.canvas.opacity(0.7), in: RoundedRectangle(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.primary.opacity(0.06), lineWidth: 0.5))
-    }
-}
-
-private enum MarkdownBlock {
-    case paragraph(String), heading(Int, String), bullet(String, String), quote(String), code(String, String)
-
-    static func parse(_ text: String) -> [MarkdownBlock] {
-        var blocks: [MarkdownBlock] = []
-        var paragraph: [String] = []
-        var code: [String] = []
-        var language = ""
-        var fence: String?
-        func flushParagraph() {
-            if !paragraph.isEmpty { blocks.append(.paragraph(paragraph.joined(separator: "\n"))); paragraph = [] }
-        }
-        for line in text.components(separatedBy: "\n") {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if let activeFence = fence {
-                if trimmed.hasPrefix(activeFence) { blocks.append(.code(language, code.joined(separator: "\n"))); code = []; fence = nil }
-                else { code.append(line) }
-                continue
-            }
-            if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") {
-                flushParagraph()
-                fence = String(trimmed.prefix(3))
-                language = String(trimmed.dropFirst(3)).trimmingCharacters(in: .whitespaces)
-            } else if trimmed.isEmpty {
-                flushParagraph()
-            } else if trimmed.hasPrefix("#"), let space = trimmed.firstIndex(of: " "), trimmed[..<space].allSatisfy({ $0 == "#" }), trimmed.distance(from: trimmed.startIndex, to: space) <= 6 {
-                flushParagraph()
-                blocks.append(.heading(trimmed.distance(from: trimmed.startIndex, to: space), String(trimmed[trimmed.index(after: space)...])))
-            } else if ["- ", "* ", "+ "].contains(where: { trimmed.hasPrefix($0) }) {
-                flushParagraph()
-                blocks.append(.bullet("•", String(trimmed.dropFirst(2))))
-            } else if let range = trimmed.range(of: #"^\d+[.)]\s+"#, options: .regularExpression) {
-                flushParagraph()
-                let marker = String(trimmed[range]).trimmingCharacters(in: .whitespaces)
-                blocks.append(.bullet(marker, String(trimmed[range.upperBound...])))
-            } else if trimmed.hasPrefix("> ") {
-                flushParagraph()
-                blocks.append(.quote(String(trimmed.dropFirst(2))))
-            } else { paragraph.append(line) }
-        }
-        flushParagraph()
-        if fence != nil { blocks.append(.code(language, code.joined(separator: "\n"))) }
-        return blocks
     }
 }

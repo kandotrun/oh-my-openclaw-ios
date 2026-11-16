@@ -32,6 +32,8 @@ public actor GatewayClient: GatewayServing {
     private var lastReceivedAt = ContinuousClock.now
     private var maxPayloadBytes = 25 * 1024 * 1024
 
+    deinit { session.invalidateAndCancel() }
+
     public init(endpoint: URL, credentials: GatewayCredentials, identity: DeviceIdentity) {
         self.endpoint = endpoint; self.credentials = credentials; self.identity = identity
         let config = URLSessionConfiguration.ephemeral

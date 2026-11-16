@@ -56,6 +56,7 @@ Attachment limits come from the connection policy and the total encoded request 
 
 ```sh
 swift test
+python3 -m unittest discover -s scripts -p 'test_*.py'
 ```
 
 The core suite covers device proof construction, safe endpoints and setup codes, conversation state, and a real loopback WebSocket exchange with the synthetic Python fixture.

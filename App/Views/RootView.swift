@@ -11,7 +11,7 @@ struct RootView: View {
     @State private var renaming: ChatSession?
     @State private var renameText = ""
 
-    private var animation: Animation { reduceMotion ? .easeOut(duration: 0.15) : .spring(response: 0.36, dampingFraction: 0.88) }
+    private var animation: Animation? { reduceMotion ? nil : .spring(response: 0.36, dampingFraction: 0.88) }
 
     var body: some View {
         GeometryReader { geometry in
@@ -41,8 +41,7 @@ struct RootView: View {
                             .accessibilityAddTraits(.isButton)
                     }
                 }
-                .offset(x: drawerOpen && !reduceMotion ? drawerWidth : 0)
-                .opacity(drawerOpen && reduceMotion ? 0.16 : 1)
+                .offset(x: drawerOpen ? drawerWidth : 0)
                 .simultaneousGesture(DragGesture(minimumDistance: 22).onEnded { value in
                     guard abs(value.translation.width) > abs(value.translation.height) * 2 else { return }
                     if drawerOpen && value.translation.width < -65 { setDrawer(false) }

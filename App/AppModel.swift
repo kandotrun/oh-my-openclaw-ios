@@ -3,6 +3,11 @@ import Foundation
 import Observation
 import OhMyOpenClawCore
 
+protocol ConversationPersisting: Sendable {
+    func load() async throws -> ConversationStore
+    func save(_ state: ConversationStore, revision: Int) async throws
+}
+
 @Observable @MainActor
 final class AppModel {
     var connectionState: ConnectionState = .disconnected
@@ -29,15 +34,22 @@ final class AppModel {
     @ObservationIgnored private var sessionRevisions: [String: Int] = [:]
     @ObservationIgnored private var pendingHistoryRefresh = Set<String>()
     @ObservationIgnored private var nextHistoryOffset = 0
-    @ObservationIgnored private var persistence: ConversationPersistence?
+    @ObservationIgnored private var loadedOlderHistory = false
+    @ObservationIgnored private var persistence: (any ConversationPersisting)?
+    @ObservationIgnored private var persistenceNamespace: String?
+    @ObservationIgnored private let persistenceFactory: @Sendable (String) throws -> any ConversationPersisting
     @ObservationIgnored private var persistenceRevision = 0
-    @ObservationIgnored private var autoConnect = true
+    @ObservationIgnored private(set) var autoConnect = true
     @ObservationIgnored private var questionRecords: [String: JSONValue] = [:]
     @ObservationIgnored private var questionAnswers: [String: [String: JSONValue]] = [:]
     @ObservationIgnored private var currentSubscription: ChatSession?
     @ObservationIgnored private var restoring = false
     @ObservationIgnored private var reconnectTask: Task<Void, Never>?
     @ObservationIgnored private var attemptedAutomaticRecovery = false
+    @ObservationIgnored private var changingConnection = false
+    @ObservationIgnored private var connectionSwitch: UUID?
+    @ObservationIgnored private var sceneGeneration = UUID()
+    @ObservationIgnored private var inBackground = false
 
     var sessions: [ChatSession] { store.sessions }
     var selectedSession: ChatSession? { store.selectedSession }
@@ -68,39 +80,46 @@ final class AppModel {
         return true
     }
 
-    init(service: (any GatewayServing)? = nil, initialStore: ConversationStore = ConversationStore(), policy: JSONValue = .null) {
+    init(service: (any GatewayServing)? = nil, initialStore: ConversationStore = ConversationStore(), policy: JSONValue = .null,
+         initialPersistence: (any ConversationPersisting)? = nil, initialNamespace: String? = nil,
+         persistenceFactory: @escaping @Sendable (String) throws -> any ConversationPersisting = { try ConversationPersistence(namespace: $0) }) {
         self.service = service; self.store = initialStore
+        self.persistence = initialPersistence; self.persistenceNamespace = initialNamespace; self.persistenceFactory = persistenceFactory
         if service != nil { connectionState = .connected; hello = GatewayHello(payload: .object(["policy": policy])) }
     }
 
     func restore() async {
-        guard service == nil, !restoring else { return }
+        guard service == nil, !restoring, !changingConnection else { return }
         restoring = true
         defer { restoring = false }
         if UserDefaults.standard.bool(forKey: "useDemo") { await startDemo(); return }
         guard let text = UserDefaults.standard.string(forKey: "lastGateway"), let url = try? GatewayEndpoint.parse(text) else { return }
-        endpoint = url
-        do {
-            try await loadStore(namespace: url.absoluteString)
-            await retryConnection()
-        } catch { errorMessage = error.localizedDescription }
+        await connect(urlText: url.absoluteString, secret: "", password: false, setupCode: "")
     }
 
     func startDemo() async {
+        guard let transaction = beginConnectionSwitch() else { return }
+        defer { finishConnectionSwitch() }
         reconnectTask?.cancel(); attemptedAutomaticRecovery = false
         await retireConnection()
-        isDemo = true; endpoint = nil; autoConnect = true
-        UserDefaults.standard.set(true, forKey: "useDemo")
         do {
-            try await loadStore(namespace: "local-demo")
+            try validateConnectionSwitch(transaction)
+            try await loadStore(namespace: "local-demo", transaction: transaction)
+            try validateConnectionSwitch(transaction)
+            isDemo = true; endpoint = nil; autoConnect = true
+            UserDefaults.standard.set(true, forKey: "useDemo")
             // A fresh deterministic service owns its own history; cached drafts remain useful.
             store.pending = [:]
             service = DemoGateway()
             await establishConnection()
-        } catch { fail(error) }
+        } catch is CancellationError { if service == nil { connectionState = .disconnected } }
+        catch { fail(error) }
     }
 
     func connect(urlText: String, secret: String, password: Bool, setupCode: String) async {
+        guard !changingConnection else { return }
+        var transactionStarted = false
+        defer { if transactionStarted { finishConnectionSwitch() } }
         reconnectTask?.cancel(); attemptedAutomaticRecovery = false
         do {
             let url: URL
@@ -114,46 +133,89 @@ final class AppModel {
                 if value == nil { credentials = try CredentialStore.read(GatewayCredentials.self, key: credentialKey(url)) ?? GatewayCredentials() }
                 else { credentials = password ? GatewayCredentials(password: value) : GatewayCredentials(token: value) }
             }
+            guard let transaction = beginConnectionSwitch() else { return }
+            transactionStarted = true
             await retireConnection()
+            try validateConnectionSwitch(transaction)
             try CredentialStore.write(credentials, key: credentialKey(url))
+            try await loadStore(namespace: url.absoluteString, transaction: transaction)
+            try validateConnectionSwitch(transaction)
             endpoint = url; isDemo = false; autoConnect = true
             UserDefaults.standard.set(false, forKey: "useDemo")
             UserDefaults.standard.set(url.absoluteString, forKey: "lastGateway")
-            try await loadStore(namespace: url.absoluteString)
             service = GatewayClient(endpoint: url, credentials: credentials, identity: try identity())
             await establishConnection()
-        } catch { fail(error) }
+        } catch is CancellationError { if service == nil { connectionState = .disconnected } }
+        catch { if connectionState == .connected { errorMessage = error.localizedDescription } else { fail(error) } }
     }
 
     func retryConnection() async {
+        guard !changingConnection else { return }
+        autoConnect = true
         reconnectTask?.cancel(); attemptedAutomaticRecovery = false
         await reconnect()
     }
 
     private func reconnect() async {
-        guard connectionState != .connecting else { return }
+        guard !changingConnection, connectionState != .connecting else { return }
         if isDemo { await startDemo(); return }
         guard let endpoint else { return }
+        guard let transaction = beginConnectionSwitch() else { return }
+        defer { finishConnectionSwitch() }
         await retireConnection()
         do {
+            try validateConnectionSwitch(transaction)
             let credentials = try CredentialStore.read(GatewayCredentials.self, key: credentialKey(endpoint)) ?? GatewayCredentials()
             service = GatewayClient(endpoint: endpoint, credentials: credentials, identity: try identity())
             await establishConnection()
-        } catch { fail(error) }
+        } catch is CancellationError { if service == nil { connectionState = .disconnected } }
+        catch { fail(error) }
     }
 
-    func foreground() async { if !restoring, autoConnect, connectionState != .connected, connectionState != .connecting { await retryConnection() } }
+    func foreground() async {
+        inBackground = false; sceneGeneration = UUID()
+        if !restoring, !changingConnection, autoConnect, connectionState != .connected, connectionState != .connecting {
+            if endpoint == nil, !isDemo { await restore() }
+            else { await retryConnection() }
+        }
+    }
     func background() async {
+        let scene = UUID(); sceneGeneration = scene; inBackground = true
         reconnectTask?.cancel()
         do { try await persistNow() } catch { errorMessage = error.localizedDescription }
-        await retireConnection()
+        guard inBackground, sceneGeneration == scene else { return }
+        connectionSwitch = nil
         connectionState = .disconnected
+        await retireConnection()
     }
     func disconnect() async {
         reconnectTask?.cancel()
-        autoConnect = false
+        autoConnect = false; connectionSwitch = nil; connectionState = .disconnected
+        let generation = connectionGeneration
         do { try await persistNow() } catch { errorMessage = error.localizedDescription }
-        await retireConnection(); connectionState = .disconnected
+        guard generation == connectionGeneration else { return }
+        await retireConnection()
+    }
+
+    private func beginConnectionSwitch() -> UUID? {
+        guard !changingConnection else { return nil }
+        changingConnection = true; connectionState = .connecting
+        let transaction = UUID(); connectionSwitch = transaction
+        return transaction
+    }
+    private func validateConnectionSwitch(_ transaction: UUID) throws {
+        guard connectionSwitch == transaction, !inBackground, !Task.isCancelled else { throw CancellationError() }
+    }
+    private func finishConnectionSwitch() {
+        changingConnection = false; connectionSwitch = nil
+        if !inBackground, autoConnect, connectionState == .disconnected {
+            reconnectTask = Task { [weak self] in
+                guard !Task.isCancelled, let self, !self.inBackground, self.autoConnect, !self.changingConnection, self.connectionState == .disconnected else { return }
+                self.reconnectTask = nil
+                if self.endpoint == nil, !self.isDemo { await self.restore() }
+                else { await self.reconnect() }
+            }
+        }
     }
 
     private func establishConnection() async {
@@ -213,13 +275,13 @@ final class AppModel {
         guard let current = selectedSession ?? sessions.first(where: \.isMain) else { return }
         let session = ChatSession(key: "local:" + UUID().uuidString, agentID: current.agentID, title: "新しいサイドチャット")
         store.upsertSession(session); store.selectedID = session.id; selectionGeneration = UUID()
-        models = []; hasMoreHistory = false; scheduleSave()
+        models = []; hasMoreHistory = false; loadedOlderHistory = false; scheduleSave()
         await refreshModels(for: session)
     }
 
     func selectSession(_ session: ChatSession) async {
         store.selectedID = session.id; selectionGeneration = UUID()
-        errorMessage = nil; hasMoreHistory = false; nextHistoryOffset = 0; models = []
+        errorMessage = nil; hasMoreHistory = false; nextHistoryOffset = 0; loadedOlderHistory = false; models = []
         scheduleSave()
         guard connectionState == .connected, let service else { return }
         let selection = selectionGeneration; let generation = connectionGeneration
@@ -318,6 +380,9 @@ final class AppModel {
         do {
             let submission = try store.retrySubmission(messageID)
             guard !sendingTargets.contains(submission.target.id) else { return }
+            guard (store.activities[submission.target.id] ?? .idle) == .idle, store.activeRunIDs[submission.target.id] == nil else {
+                throw GatewayFailure(code: "RUN_IN_PROGRESS", message: "現在の応答が終わってから、前のメッセージを再試行してください。")
+            }
             store.activeRunIDs[submission.target.id] = submission.id; store.activities[submission.target.id] = .working
             await sendPrepared(submission)
         } catch { errorMessage = error.localizedDescription }
@@ -421,12 +486,13 @@ final class AppModel {
         let generation = connectionGeneration; let selection = selectionGeneration
         do {
             let result = try await service.request(method: "chat.history", params: targetParams(target, extra: ["limit": .number(100), "offset": .number(Double(nextHistoryOffset))]))
-            guard connectionGeneration == generation, selectionGeneration == selection else { return }
+            guard connectionGeneration == generation, selectionGeneration == selection, selectedSession?.sessionID == target.sessionID else { return }
             let older = ConversationStore.parseMessages(result["messages"].arrayValue ?? [], fallbackPrefix: "older:\(nextHistoryOffset)")
             var current = store.transcripts[target.id] ?? []
             let known = Set(current.map(\.id))
             current.insert(contentsOf: older.filter { !known.contains($0.id) }, at: 0)
             store.transcripts[target.id] = current
+            if !older.isEmpty { loadedOlderHistory = true }
             hasMoreHistory = result["hasMore"].boolValue ?? false
             nextHistoryOffset = result["nextOffset"].intValue ?? nextHistoryOffset + older.count
             scheduleSave()
@@ -445,16 +511,17 @@ final class AppModel {
         scheduleSave()
     }
 
-    private func refreshHistory(for target: ChatSession) async throws {
+    func refreshHistory(for target: ChatSession) async throws {
         guard !target.key.hasPrefix("local:"), let service else { return }
         let generation = connectionGeneration
         let revision = streamRevisions[target.id, default: 0]
-        let runIDs = store.pending.values.filter { $0.target.id == target.id }.map { JSONValue.string($0.id) }
+        let activeRunBeforeRequest = store.activeRunIDs[target.id]
+        let runIDs = store.pending.values.filter { $0.target.id == target.id && $0.target.sessionID == target.sessionID }.map { JSONValue.string($0.id) }
         var extra: [String: JSONValue] = ["limit": .number(100)]
         if !runIDs.isEmpty { extra["inputRunIds"] = .array(Array(runIDs.prefix(50))) }
         let result = try await service.request(method: "chat.history", params: targetParams(target, extra: extra))
         guard generation == connectionGeneration, let current = store.sessions.first(where: { $0.id == target.id }), current.sessionID == target.sessionID else { return }
-        guard streamRevisions[target.id, default: 0] == revision else {
+        guard streamRevisions[target.id, default: 0] == revision, store.activeRunIDs[target.id] == activeRunBeforeRequest else {
             pendingHistoryRefresh.insert(target.id)
             scheduleQuietRefresh(); return
         }
@@ -463,11 +530,14 @@ final class AppModel {
         if let model = result["sessionInfo"]["model"].stringValue { resolved.modelID = qualifiedModel(id: model, provider: result["sessionInfo"]["modelProvider"].stringValue) }
         if let thinking = result["sessionInfo"]["thinkingLevel"].stringValue { resolved.thinkingLevel = thinking }
         store.upsertSession(resolved)
-        store.applyHistory(result, for: resolved)
+        let preserved = store.applyHistory(result, for: resolved, preservingOlderHistory: store.selectedID == target.id && loadedOlderHistory && resolved.sessionID == current.sessionID)
         pendingHistoryRefresh.remove(target.id)
         if store.selectedID == target.id {
-            hasMoreHistory = result["hasMore"].boolValue ?? false
-            nextHistoryOffset = result["nextOffset"].intValue ?? result["messages"].arrayValue?.count ?? 0
+            if preserved == 0 {
+                hasMoreHistory = result["hasMore"].boolValue ?? false
+                loadedOlderHistory = false
+            }
+            nextHistoryOffset = (result["nextOffset"].intValue ?? result["messages"].arrayValue?.count ?? 0) + preserved
         }
         scheduleSave()
     }
@@ -498,6 +568,7 @@ final class AppModel {
                 reconnectTask = Task { [weak self] in
                     do { try await Task.sleep(for: .milliseconds(750)) } catch { return }
                     guard !Task.isCancelled, let self, self.autoConnect else { return }
+                    self.reconnectTask = nil
                     await self.reconnect()
                 }
             }
@@ -652,14 +723,31 @@ final class AppModel {
     }
     private func credentialKey(_ url: URL) -> String { "gateway:" + digest(url.absoluteString) }
     private func digest(_ value: String) -> String { SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined() }
-    private func loadStore(namespace: String) async throws {
-        saveTask?.cancel()
-        if let persistence { try await persistence.save(store, revision: persistenceRevision + 1) }
-        let persistence = try ConversationPersistence(namespace: digest(namespace))
-        self.persistence = persistence; persistenceRevision = 0
-        store = try await persistence.load()
+    private func loadStore(namespace: String, transaction: UUID) async throws {
+        let savedRevision = try await persistForSwitch(transaction)
+        let key = digest(namespace)
+        if persistenceNamespace == key { return }
+        let incoming = try persistenceFactory(key)
+        let loaded = try await incoming.load()
+        try validateConnectionSwitch(transaction)
+        if persistenceRevision != savedRevision { _ = try await persistForSwitch(transaction) }
+        try validateConnectionSwitch(transaction)
+        // Publish the owner and its state together, after all outgoing edits are durable.
+        saveTask?.cancel(); saveTask = nil
+        persistence = incoming; persistenceNamespace = key; persistenceRevision = 0
+        store = loaded
         store.retireTransientState()
         promptRecords = []; promptTargets = [:]; models = []; streamRevisions = [:]; sessionRevisions = [:]; pendingHistoryRefresh = []
+    }
+    private func persistForSwitch(_ transaction: UUID) async throws -> Int {
+        while true {
+            try validateConnectionSwitch(transaction)
+            saveTask?.cancel(); persistenceRevision += 1
+            let revision = persistenceRevision
+            try await persistence?.save(store, revision: revision)
+            try validateConnectionSwitch(transaction)
+            if persistenceRevision == revision { return revision }
+        }
     }
     private func scheduleSave() {
         persistenceRevision += 1
@@ -681,7 +769,7 @@ final class AppModel {
     private func fail(_ error: any Error) { connectionState = .failed(error.localizedDescription); errorMessage = error.localizedDescription }
 }
 
-private actor ConversationPersistence {
+actor ConversationPersistence: ConversationPersisting {
     private let url: URL
     private var newestRevision = -1
     init(namespace: String) throws {

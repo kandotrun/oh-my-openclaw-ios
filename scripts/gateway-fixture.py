@@ -30,12 +30,13 @@ class Client(socketserver.StreamRequestHandler):
         accept = base64.b64encode(digest).decode()
         self.wfile.write(("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: " + accept + "\r\n\r\n").encode())
         self.wfile.flush()
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
         self.seq = 0
         self.timestamp = int(time.time() * 1000)
         self.emit("connect.challenge", {"nonce": "fixture-challenge", "ts": self.timestamp}, sequence=False)
         self.admitted = False
         self.stopped = set()
+        self.finished = set()
         try:
             while True:
                 frame = self.receive()
@@ -79,11 +80,12 @@ class Client(socketserver.StreamRequestHandler):
         self.send_bytes(json.dumps(value, ensure_ascii=False).encode())
 
     def emit(self, name, payload, sequence=True):
-        frame = {"type": "event", "event": name, "payload": payload}
-        if sequence:
-            self.seq += 1
-            frame["seq"] = self.seq
-        self.send(frame)
+        with self.lock:
+            frame = {"type": "event", "event": name, "payload": payload}
+            if sequence:
+                self.seq += 1
+                frame["seq"] = self.seq
+            self.send(frame)
 
     def result(self, frame, payload):
         self.send({"type": "res", "id": frame["id"], "ok": True, "payload": payload})
@@ -137,25 +139,37 @@ class Client(socketserver.StreamRequestHandler):
             self.server.messages.setdefault(params["sessionKey"], []).append({"role": "user", "content": [{"type": "text", "text": params["message"]}], "__openclaw": {"id": params["idempotencyKey"]}})
             threading.Thread(target=self.respond, args=(params,), daemon=True).start()
         elif method == "chat.abort":
-            self.stopped.add(params["runId"])
-            self.emit("chat", {"runId": params["runId"], "sessionKey": params["sessionKey"], "state": "aborted"})
-            self.result(frame, {"ok": True, "aborted": True})
+            with self.lock:
+                if params["runId"] in self.finished:
+                    self.result(frame, {"ok": True, "aborted": False})
+                else:
+                    self.stopped.add(params["runId"])
+                    self.emit("chat", {"runId": params["runId"], "sessionKey": params["sessionKey"], "state": "aborted"})
+                    self.result(frame, {"ok": True, "aborted": True})
         else:
             self.send({"type": "res", "id": frame["id"], "ok": False, "error": {"code": "INVALID_REQUEST", "message": "Unsupported fixture method"}})
 
     def respond(self, params):
         run, key = params["idempotencyKey"], params["sessionKey"]
         try:
-            self.emit("agent", {"runId": run, "sessionKey": key, "stream": "tool", "data": {"name": "web_search", "phase": "start"}})
-            time.sleep(0.15)
-            for index, chunk in enumerate(["This is ", "a synthetic ", "WebSocket response."]):
+            with self.lock:
                 if run in self.stopped:
                     return
-                self.emit("chat", {"runId": run, "sessionKey": key, "seq": index + 1, "state": "delta", "deltaText": chunk})
+                self.emit("agent", {"runId": run, "sessionKey": key, "stream": "tool", "data": {"name": "web_search", "phase": "start"}})
+            time.sleep(0.15)
+            for index, chunk in enumerate(["This is ", "a synthetic ", "WebSocket response."]):
+                with self.lock:
+                    if run in self.stopped:
+                        return
+                    self.emit("chat", {"runId": run, "sessionKey": key, "seq": index + 1, "state": "delta", "deltaText": chunk})
                 time.sleep(0.08)
             message = {"role": "assistant", "content": [{"type": "text", "text": "This is a synthetic WebSocket response."}], "__openclaw": {"id": run + "-answer"}}
-            self.server.messages[key].append(message)
-            self.emit("chat", {"runId": run, "sessionKey": key, "state": "final", "message": message})
+            with self.lock:
+                if run in self.stopped:
+                    return
+                self.server.messages[key].append(message)
+                self.finished.add(run)
+                self.emit("chat", {"runId": run, "sessionKey": key, "state": "final", "message": message})
         except (ConnectionError, BrokenPipeError, OSError):
             pass
 

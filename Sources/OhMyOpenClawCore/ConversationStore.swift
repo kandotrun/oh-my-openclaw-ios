@@ -119,6 +119,9 @@ public struct ConversationStore: Codable, Sendable {
         body["sessionId"] = session.sessionID.map(JSONValue.string)
         submission.target = session; submission.params = .object(body)
         pending[id] = submission
+        if !(transcripts[session.id] ?? []).contains(where: { $0.id == submission.message.id }) {
+            transcripts[session.id, default: []].append(submission.message)
+        }
         activeRunIDs[old.id] = nil; activities[old.id] = nil
         activeRunIDs[session.id] = id; activities[session.id] = .working
         return submission
@@ -129,6 +132,7 @@ public struct ConversationStore: Codable, Sendable {
         submission.accepted = true
         submission.message.delivery = .accepted
         pending[runID] = submission
+        guard let current = sessions.first(where: { $0.id == submission.target.id }), current.sessionID == submission.target.sessionID else { return }
         if let index = transcripts[submission.target.id]?.firstIndex(where: { $0.id == runID + ":user" }) {
             transcripts[submission.target.id]?[index].delivery = .accepted
         }
@@ -143,15 +147,19 @@ public struct ConversationStore: Codable, Sendable {
         if let index = transcripts[submission.target.id]?.firstIndex(where: { $0.runID == runID && $0.role == .user }) {
             transcripts[submission.target.id]?[index].delivery = .uncertain
         }
-        activities[submission.target.id] = .idle
-        activeRunIDs[submission.target.id] = nil
+        if activeRunIDs[submission.target.id] == runID {
+            activities[submission.target.id] = .idle
+            activeRunIDs[submission.target.id] = nil
+        }
     }
 
     public mutating func reject(_ runID: String) {
         guard let submission = pending.removeValue(forKey: runID) else { return }
         transcripts[submission.target.id]?.removeAll { $0.id == runID + ":user" }
-        activities[submission.target.id] = .idle
-        activeRunIDs[submission.target.id] = nil
+        if activeRunIDs[submission.target.id] == runID {
+            activities[submission.target.id] = .idle
+            activeRunIDs[submission.target.id] = nil
+        }
     }
 
     public func retrySubmission(_ id: String) throws -> PendingSubmission {
@@ -206,10 +214,16 @@ public struct ConversationStore: Codable, Sendable {
         return true
     }
 
-    public mutating func applyHistory(_ payload: JSONValue, for target: ChatSession) {
-        guard let current = sessions.first(where: { $0.id == target.id }), current.sessionID == target.sessionID else { return }
-        if let serverID = payload["sessionId"].stringValue, let physical = target.sessionID, serverID != physical { return }
+    @discardableResult public mutating func applyHistory(_ payload: JSONValue, for target: ChatSession, preservingOlderHistory: Bool = false) -> Int {
+        guard let current = sessions.first(where: { $0.id == target.id }), current.sessionID == target.sessionID else { return 0 }
+        if let serverID = payload["sessionId"].stringValue, let physical = target.sessionID, serverID != physical { return 0 }
+        let previous = transcripts[target.id] ?? []
         var rows = Self.parseMessages(payload["messages"].arrayValue ?? [], fallbackPrefix: "history")
+        var olderRows: [ChatMessage] = []
+        if preservingOlderHistory, payload["hasMore"].boolValue == true, let firstID = rows.first?.id,
+           let boundary = previous.firstIndex(where: { $0.id == firstID }) {
+            olderRows = previous[..<boundary].filter { $0.sourceID != nil }
+        }
         for item in payload["pendingInputs"]["items"].arrayValue ?? [] where item["message"] != .null {
             var row = Self.parseMessage(item["message"], fallbackID: item["id"].stringValue ?? UUID().uuidString)
             row.runID = item["runId"].stringValue
@@ -217,7 +231,7 @@ public struct ConversationStore: Codable, Sendable {
             if !rows.contains(where: { $0.id == row.id }) { rows.append(row) }
         }
         let receipts = payload["inputReceipts"].arrayValue ?? []
-        for submission in Array(pending.values) where submission.target.id == target.id {
+        for submission in Array(pending.values) where submission.target.id == target.id && submission.target.sessionID == target.sessionID {
             let receipt = receipts.first { $0["runId"].stringValue == submission.id }
             let stored = rows.contains { $0.sourceID == submission.id + ":user" || ($0.runID == submission.id && $0.role == .user) || $0.sourceID == receipt?["consumedByEventId"].stringValue }
             if stored || ["pending", "consumed"].contains(receipt?["state"].stringValue ?? "") {
@@ -235,7 +249,8 @@ public struct ConversationStore: Codable, Sendable {
         } else {
             activeRunIDs[target.id] = nil; activities[target.id] = .idle
         }
-        transcripts[target.id] = rows
+        transcripts[target.id] = olderRows + rows
+        return olderRows.count
     }
 
     public func matchingSession(key: String, agentID: String?) -> ChatSession? {

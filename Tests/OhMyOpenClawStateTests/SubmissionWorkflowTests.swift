@@ -10,6 +10,7 @@ private actor SubmissionGateway: GatewayServing {
     private var creation: CheckedContinuation<JSONValue, any Error>?
     private(set) var creates: [JSONValue] = []
     private(set) var sends: [JSONValue] = []
+    private(set) var aborts: [JSONValue] = []
 
     init(holdCreation: Bool = false, failFirstSend: Bool = false) { self.holdCreation = holdCreation; self.failFirstSend = failFirstSend }
     func connect() async throws -> GatewayHello { GatewayHello(payload: .null) }
@@ -38,6 +39,7 @@ private actor SubmissionGateway: GatewayServing {
             if failFirstSend && sends.count == 1 { throw GatewayFailure(code: "REQUEST_TIMEOUT", message: "Synthetic lost acknowledgment") }
             return .object(["runId": params["idempotencyKey"], "status": .string("started")])
         }
+        if method == "chat.abort" { aborts.append(params) }
         return .object([:])
     }
 }
@@ -108,4 +110,33 @@ private actor SubmissionGateway: GatewayServing {
     #expect(sent[0]["idempotencyKey"] != sent[1]["idempotencyKey"])
     #expect(sent[1]["message"].stringValue == "distinct next message")
     #expect(app.messages.filter { $0.role == .user }.count == 2)
+}
+
+@Test @MainActor func explicitResumeRestoresAutomaticReconnectIntent() async {
+    let service = SubmissionGateway()
+    let main = ChatSession(key: "agent:a:main", agentID: "a", sessionID: "physical", title: "Main", isMain: true)
+    let app = model(session: main, draft: ComposerDraft(), service: service)
+    await app.disconnect()
+    #expect(!app.autoConnect)
+    await app.retryConnection()
+    #expect(app.autoConnect)
+}
+
+@Test @MainActor func retryOfOlderUncertainInputCannotReplaceTheRunningResponse() async throws {
+    let service = SubmissionGateway()
+    let main = ChatSession(key: "agent:a:main", agentID: "a", sessionID: "physical", title: "Main", isMain: true)
+    var store = ConversationStore()
+    store.upsertSession(main); store.selectedID = main.id
+    store.setDraft(ComposerDraft(text: "A"), for: main.id)
+    let old = try store.prepareSubmission(for: main, policy: .null)
+    store.markUncertain(old.id)
+    store.setDraft(ComposerDraft(text: "B"), for: main.id)
+    let running = try store.prepareSubmission(for: main, policy: .null)
+    store.acknowledge(running.id)
+    let app = AppModel(service: service, initialStore: store)
+    await app.retryPending(old.id)
+    #expect(await service.sends.isEmpty)
+    #expect(app.activity != .idle)
+    await app.stop()
+    #expect(await service.aborts.first?["runId"].stringValue == running.id)
 }

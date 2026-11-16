@@ -61,7 +61,7 @@ public actor DemoGateway: GatewayServing {
         case "sessions.create":
             let key = "agent:demo:dashboard:" + UUID().uuidString
             let title = String((params["titleSource"].stringValue ?? "新しいサイドチャット").prefix(24))
-            let session = ChatSession(key: key, agentID: "demo", sessionID: UUID().uuidString, title: title.isEmpty ? "新しいサイドチャット" : title)
+            let session = ChatSession(key: key, agentID: "demo", sessionID: UUID().uuidString, title: title.isEmpty ? "新しいサイドチャット" : title, modelID: params["model"].stringValue, thinkingLevel: params["thinkingLevel"].stringValue)
             sessions.append(session); histories[key] = []
             emit("sessions.changed", .object(["session": row(session), "reason": .string("create")]))
             return .object(["key": .string(key), "sessionId": .string(session.sessionID!), "entry": row(session)])
