@@ -45,7 +45,7 @@ final class AppModel {
     @ObservationIgnored private var currentSubscription: ChatSession?
     @ObservationIgnored private var restoring = false
     @ObservationIgnored private var reconnectTask: Task<Void, Never>?
-    @ObservationIgnored private var attemptedAutomaticRecovery = false
+    @ObservationIgnored private(set) var attemptedAutomaticRecovery = false
     @ObservationIgnored private var changingConnection = false
     @ObservationIgnored private var connectionSwitch: UUID?
     @ObservationIgnored private var sceneGeneration = UUID()
@@ -218,7 +218,7 @@ final class AppModel {
         }
     }
 
-    private func establishConnection() async {
+    func establishConnection() async {
         guard let service else { return }
         let generation = connectionGeneration
         connectionState = .connecting; errorMessage = nil; notice = nil
@@ -246,6 +246,7 @@ final class AppModel {
             let existingMain = store.sessions.first { $0.agentID == agentID && $0.key == mainKey }
             store.upsertSession(ChatSession(key: mainKey, agentID: agentID, sessionID: existingMain?.sessionID, title: "メインチャット", isMain: true, modelID: existingMain?.modelID, thinkingLevel: existingMain?.thinkingLevel))
             if store.selectedSession == nil { store.selectedID = agentID + "|" + mainKey }
+            attemptedAutomaticRecovery = false
             connectionState = .connected
             do { try await refreshRoster() } catch { notice = "会話一覧を更新できませんでした。再接続でやり直せます。" }
             guard connectionGeneration == generation else { return }

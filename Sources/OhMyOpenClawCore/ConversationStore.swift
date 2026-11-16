@@ -100,7 +100,7 @@ public struct ConversationStore: Codable, Sendable {
 
     public func unresolvedSubmission(matching draft: ComposerDraft, for session: ChatSession) -> PendingSubmission? {
         pending.values.first {
-            $0.target.id == session.id && !$0.accepted &&
+            $0.target.id == session.id && $0.target.sessionID == session.sessionID && !$0.accepted &&
             ComposerDraft(text: $0.message.text, attachments: $0.message.attachments) == draft
         }
     }

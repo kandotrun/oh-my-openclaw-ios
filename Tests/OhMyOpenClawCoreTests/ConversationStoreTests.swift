@@ -127,6 +127,25 @@ private func chat(_ state: String, run: String = "run", session: ChatSession = m
     #expect(throws: GatewayFailure.self) { try store.retrySubmission(old.id) }
 }
 
+@Test func replacementSessionCanSubmitTheSameDraftWithoutReusingItsOldPhysicalIdentity() throws {
+    var store = fixtureStore()
+    let draft = ComposerDraft(text: "same draft", attachments: [ChatAttachment(fileName: "note.txt", mimeType: "text/plain", data: Data("note".utf8))])
+    store.setDraft(draft, for: main.id)
+    let old = try store.prepareSubmission(for: main, policy: .null)
+    store.markUncertain(old.id)
+    #expect(store.unresolvedSubmission(matching: draft, for: main)?.id == old.id)
+    var replacement = main; replacement.sessionID = "replacement"
+    store.upsertSession(replacement)
+    #expect(store.unresolvedSubmission(matching: draft, for: replacement) == nil)
+    let new = try store.prepareSubmission(for: replacement, policy: .null)
+    #expect(new.id != old.id)
+    #expect(new.params["sessionId"].stringValue == "replacement")
+    #expect(new.message.text == old.message.text)
+    #expect(new.message.attachments == old.message.attachments)
+    #expect(store.pending[old.id]?.params == old.params)
+    #expect(throws: GatewayFailure.self) { try store.retrySubmission(old.id) }
+}
+
 @Test func settlingAnOldSubmissionCannotClearANewerActiveRun() throws {
     var store = fixtureStore()
     store.setDraft(ComposerDraft(text: "A"), for: main.id)

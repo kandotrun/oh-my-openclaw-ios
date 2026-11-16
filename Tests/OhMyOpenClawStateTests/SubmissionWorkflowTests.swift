@@ -98,6 +98,26 @@ private actor SubmissionGateway: GatewayServing {
     #expect(app.messages.filter { $0.role == .user }.count == 1)
 }
 
+@Test @MainActor func ordinarySendUsesTheReplacementPhysicalSessionForAnUnchangedDraft() async throws {
+    let service = SubmissionGateway()
+    let original = ChatSession(key: "agent:a:main", agentID: "a", sessionID: "physical", title: "Main", isMain: true)
+    var store = ConversationStore()
+    store.upsertSession(original); store.selectedID = original.id
+    store.setDraft(ComposerDraft(text: "unchanged draft"), for: original.id)
+    let old = try store.prepareSubmission(for: original, policy: .null)
+    store.markUncertain(old.id)
+    var replacement = original; replacement.sessionID = "replacement"
+    store.upsertSession(replacement)
+    let app = AppModel(service: service, initialStore: store)
+    await app.send()
+    let sent = try #require(await service.sends.first)
+    #expect(sent["sessionId"].stringValue == "replacement")
+    #expect(sent["idempotencyKey"].stringValue != old.id)
+    #expect(sent["message"].stringValue == "unchanged draft")
+    #expect(app.errorMessage == nil)
+    #expect(app.messages.filter { $0.role == .user }.count == 1)
+}
+
 @Test @MainActor func distinctNewInputCanFollowAnUncertainSubmission() async throws {
     let service = SubmissionGateway(failFirstSend: true)
     let main = ChatSession(key: "agent:a:main", agentID: "a", sessionID: "physical", title: "Main", isMain: true)
