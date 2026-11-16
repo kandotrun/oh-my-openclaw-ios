@@ -1,0 +1,115 @@
+import Foundation
+import Testing
+@testable import OhMyOpenClawCore
+
+private let main = ChatSession(key: "agent:a:main", agentID: "a", sessionID: "physical-main", title: "Main", isMain: true)
+private let side = ChatSession(key: "agent:a:dashboard:side", agentID: "a", sessionID: "physical-side", title: "Side")
+
+private func fixtureStore() -> ConversationStore {
+    var store = ConversationStore()
+    store.upsertSession(main); store.upsertSession(side); store.selectedID = main.id
+    return store
+}
+
+private func chat(_ state: String, run: String = "run", session: ChatSession = main, seq: Int = 1, extra: [String: JSONValue] = [:]) -> JSONValue {
+    .object(extra.merging(["sessionKey": .string(session.key), "agentId": .string(session.agentID), "runId": .string(run), "state": .string(state), "seq": .number(Double(seq))], uniquingKeysWith: { _, new in new }))
+}
+
+@Test func conversationSnapshotAlreadyIncludesDeltaAndEmptyReplacementClearsText() {
+    var store = fixtureStore()
+    store.applyChatEvent(chat("delta", extra: ["deltaText": .string("Hello"), "message": .object(["role": .string("assistant"), "content": .string("Hello")])]))
+    #expect(store.selectedMessages.last?.text == "Hello")
+    store.applyChatEvent(chat("delta", seq: 8, extra: ["deltaText": .string(" world")]))
+    #expect(store.selectedMessages.last?.text == "Hello world")
+    store.applyChatEvent(chat("delta", seq: 9, extra: ["deltaText": .string(""), "replace": .bool(true)]))
+    #expect(store.selectedMessages.last?.text == "")
+    store.applyChatEvent(chat("delta", seq: 8, extra: ["deltaText": .string("stale")]))
+    #expect(store.selectedMessages.last?.text == "")
+}
+
+@Test func conversationRunTargetsDoNotMixSideAndMain() {
+    var store = fixtureStore()
+    store.applyChatEvent(chat("delta", session: side, extra: ["deltaText": .string("side response")]))
+    #expect(store.selectedMessages.isEmpty)
+    #expect(store.transcripts[side.id]?.last?.text == "side response")
+    store.applyChatEvent(chat("delta", run: "main-run", extra: ["deltaText": .string("main response")]))
+    #expect(store.selectedMessages.last?.text == "main response")
+    #expect(store.activeRunIDs[side.id] == "run")
+}
+
+@Test func conversationAcknowledgmentPreservesNewerTypedText() throws {
+    var store = fixtureStore()
+    let attachment = ChatAttachment(fileName: "notes.txt", mimeType: "text/plain", data: Data("notes".utf8))
+    store.setDraft(ComposerDraft(text: "original", attachments: [attachment]), for: main.id)
+    let submission = try store.prepareSubmission(for: main, policy: .null)
+    store.setDraft(ComposerDraft(text: "new Japanese input 日本語"), for: main.id)
+    store.acknowledge(submission.id)
+    #expect(store.selectedDraft.text == "new Japanese input 日本語")
+    #expect(store.pending[submission.id]?.params == submission.params)
+    #expect(store.pending[submission.id]?.message.attachments == [attachment])
+}
+
+@Test func conversationLostAcknowledgmentKeepsExactPayloadAcrossDiskAndRetry() throws {
+    var store = fixtureStore()
+    store.setDraft(ComposerDraft(text: "one submission", attachments: [ChatAttachment(fileName: "x.zip", mimeType: "application/zip", data: Data([1, 2, 3]))]), for: side.id)
+    let original = try store.prepareSubmission(for: side, policy: .null)
+    store.markUncertain(original.id)
+    let saved = try JSONEncoder().encode(store)
+    var restored = try JSONDecoder().decode(ConversationStore.self, from: saved)
+    let retry = try restored.retrySubmission(original.message.id)
+    #expect(retry.id == original.id)
+    #expect(retry.params == original.params)
+    #expect(restored.drafts[side.id]?.text == "one submission")
+    var replaced = side; replaced.sessionID = "new-physical-session"
+    restored.upsertSession(replaced)
+    #expect(throws: GatewayFailure.self) { try restored.retrySubmission(original.id) }
+}
+
+@Test func conversationAttachmentRejectionRetainsDraftAndCreatesNoOutbox() throws {
+    var store = fixtureStore()
+    let draft = ComposerDraft(text: "keep me", attachments: [ChatAttachment(fileName: "large.pdf", mimeType: "application/pdf", data: Data(repeating: 1, count: 64))])
+    store.setDraft(draft, for: main.id)
+    let policy: JSONValue = .object(["attachments": .object(["maxBytes": .number(10), "maxImageBytes": .number(10)])])
+    #expect(throws: GatewayFailure.self) { try store.prepareSubmission(for: main, policy: policy) }
+    #expect(store.selectedDraft == draft)
+    #expect(store.pending.isEmpty)
+    #expect(store.selectedMessages.isEmpty)
+}
+
+@Test func conversationTerminalBeforeAcknowledgmentSettlesUserDelivery() throws {
+    var store = fixtureStore()
+    store.setDraft(ComposerDraft(text: "hello"), for: main.id)
+    let submission = try store.prepareSubmission(for: main, policy: .null)
+    store.applyChatEvent(chat("final", run: submission.id, extra: ["message": .object(["role": .string("assistant"), "content": .string("done")])]))
+    #expect(store.selectedMessages.first?.delivery == .accepted)
+    #expect(store.selectedDraft.text.isEmpty)
+    #expect(store.activities[main.id] == .idle)
+}
+
+@Test func conversationHistoryReceiptsUseDurableIdentityAndSiblingRowsHaveDistinctIDs() throws {
+    var store = fixtureStore()
+    store.setDraft(ComposerDraft(text: "hello"), for: main.id)
+    let submission = try store.prepareSubmission(for: main, policy: .null)
+    store.markUncertain(submission.id)
+    let rows: [JSONValue] = [
+        .object(["role": .string("user"), "content": .string("hello"), "__openclaw": .object(["id": .string("record-user")])]),
+        .object(["role": .string("assistant"), "content": .string("first projected row"), "__openclaw": .object(["id": .string("record-assistant")])]),
+        .object(["role": .string("assistant"), "content": .string("second projected row"), "__openclaw": .object(["id": .string("record-assistant")])]),
+    ]
+    store.applyHistory(.object(["sessionId": .string(main.sessionID!), "messages": .array(rows), "inputReceipts": .array([.object(["runId": .string(submission.id), "state": .string("consumed"), "consumedByEventId": .string("record-user")])])]), for: main)
+    #expect(store.selectedMessages.count == 3)
+    #expect(Set(store.selectedMessages.map(\.id)).count == 3)
+    #expect(store.selectedMessages[1].sourceID == store.selectedMessages[2].sourceID)
+    #expect(store.pending[submission.id] == nil)
+    #expect(store.selectedDraft.text.isEmpty)
+}
+
+@Test func conversationHistoryCannotReplaceNewPhysicalSessionOrEraseDraft() {
+    var store = fixtureStore()
+    store.setDraft(ComposerDraft(text: "composing"), for: main.id)
+    var replaced = main; replaced.sessionID = "replacement"
+    store.upsertSession(replaced)
+    store.applyHistory(.object(["sessionId": .string(main.sessionID!), "messages": .array([.object(["role": .string("assistant"), "content": .string("stale")])])]), for: main)
+    #expect(store.selectedMessages.isEmpty)
+    #expect(store.selectedDraft.text == "composing")
+}
