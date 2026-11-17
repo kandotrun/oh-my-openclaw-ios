@@ -15,9 +15,9 @@ struct RootView: View {
 
     var body: some View {
         GeometryReader { geometry in
-            let drawerWidth = min(330.0, geometry.size.width * 0.84)
+            let drawerWidth = min(304.0, geometry.size.width * 0.78)
             ZStack(alignment: .leading) {
-                ChatTheme.secondaryCanvas.ignoresSafeArea()
+                ChatTheme.canvas.ignoresSafeArea()
                 if !model.sessions.isEmpty && drawerOpen {
                     drawer(width: drawerWidth)
                         .opacity(drawerOpen ? 1 : 0)
@@ -79,61 +79,87 @@ struct RootView: View {
     private func setDrawer(_ open: Bool) { withAnimation(animation) { drawerOpen = open } }
 
     private func drawer(width: CGFloat) -> some View {
-        VStack(alignment: .leading, spacing: 24) {
-            VStack(alignment: .leading, spacing: 8) {
-                AgentAvatar(size: 42)
-                Text(model.agentName).font(.title.weight(.semibold))
-                if model.isDemo { Text("デモ").font(.caption.weight(.medium)).foregroundStyle(.secondary) }
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                Text(model.agentName)
+                    .font(.title3.weight(.semibold))
+                    .lineLimit(1)
+                if model.isDemo {
+                    Text("デモ")
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(ChatTheme.secondaryCanvas, in: Capsule())
+                }
+                Spacer(minLength: 0)
             }
-            .padding(.top, 28)
+            .padding(.horizontal, 12)
+            .padding(.top, 20)
+            .padding(.bottom, 24)
 
             ScrollView {
-                VStack(alignment: .leading, spacing: 6) {
+                VStack(alignment: .leading, spacing: 4) {
                     ForEach(filteredSessions.filter(\.isMain)) { session in sessionRow(session) }
-                    if !filteredSessions.filter({ !$0.isMain }).isEmpty {
+                    HStack {
                         Text("サイドチャット")
-                            .font(.footnote.weight(.medium))
+                            .font(.caption.weight(.medium))
                             .foregroundStyle(.secondary)
-                            .padding(.top, 22)
-                            .padding(.bottom, 8)
+                        Spacer(minLength: 8)
+                        Button {
+                            setDrawer(false)
+                            Task { await model.newSideChat() }
+                        } label: {
+                            Image(systemName: "plus")
+                                .font(.system(size: 15, weight: .medium))
+                                .foregroundStyle(.primary)
+                                .frame(width: 44, height: 44)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("新しいサイドチャット")
+                        .accessibilityIdentifier("newChatButton")
                     }
+                    .padding(.leading, 12)
+                    .padding(.top, 18)
                     ForEach(filteredSessions.filter { !$0.isMain }) { session in sessionRow(session) }
-                    if filteredSessions.isEmpty { Text("一致する会話がありません").font(.footnote).foregroundStyle(.secondary).padding(.vertical) }
+                    if filteredSessions.isEmpty || (!search.isEmpty && !filteredSessions.contains(where: { !$0.isMain })) {
+                        Text(filteredSessions.isEmpty ? "一致する会話がありません" : "一致するサイドチャットがありません")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 12)
+                    }
                 }
+                .padding(.bottom, 20)
             }
+            .scrollIndicators(.hidden)
 
-            ChatGlassGroup {
-                HStack(spacing: 12) {
-                    Button { setDrawer(false); showSettings = true } label: {
-                        Image(systemName: "gearshape").font(.title3).foregroundStyle(.primary)
-                    }
-                    .chatGlassButton()
-                    .buttonBorderShape(.circle)
-                    .controlSize(.large)
-                    .frame(minWidth: 44, minHeight: 44)
-                    .accessibilityLabel("設定")
-                    HStack(spacing: 7) {
-                        Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                        TextField("検索", text: $search).font(.subheadline)
-                    }
-                    .padding(.horizontal, 11)
-                    .frame(minHeight: 42)
-                    .chatGlassSurface(cornerRadius: 22)
-                    Button {
-                        setDrawer(false)
-                        Task { await model.newSideChat() }
-                    } label: { Image(systemName: "square.and.pencil").font(.title3).foregroundStyle(.primary) }
-                    .chatGlassButton()
-                    .buttonBorderShape(.circle)
-                    .controlSize(.large)
-                    .frame(minWidth: 44, minHeight: 44)
-                    .accessibilityLabel("新しいサイドチャット")
-                    .accessibilityIdentifier("newChatButton")
+            HStack(spacing: 10) {
+                Button { setDrawer(false); showSettings = true } label: {
+                    Image(systemName: "gearshape")
+                        .font(.system(size: 18, weight: .regular))
+                        .foregroundStyle(.primary)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
+                .accessibilityLabel("設定")
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                    TextField("検索", text: $search)
+                        .font(.subheadline)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                }
+                .padding(.horizontal, 12)
+                .frame(maxWidth: .infinity, minHeight: 42)
+                .background(ChatTheme.secondaryCanvas, in: Capsule())
             }
+            .padding(.top, 12)
             .padding(.bottom, 12)
         }
-        .padding(.horizontal, 20)
+        .padding(.horizontal, 16)
         .frame(width: width, alignment: .leading)
     }
 
@@ -142,25 +168,27 @@ struct RootView: View {
     }
 
     private func sessionRow(_ session: ChatSession) -> some View {
-        Button {
+        let isSelected = session.id == model.selectedSession?.id
+        return Button {
             setDrawer(false)
             Task { await model.selectSession(session) }
         } label: {
-            HStack(spacing: 11) {
+            HStack(spacing: 12) {
                 Image(systemName: session.isMain ? "bubble.left.and.bubble.right" : "bubble.left")
-                    .font(.body)
-                    .frame(width: 23)
-                    .foregroundStyle(session.key == model.selectedSessionKey ? ChatTheme.accent : .secondary)
+                    .font(.system(size: 18, weight: .regular))
+                    .frame(width: 22)
+                    .foregroundStyle(isSelected ? Color.primary : Color.secondary)
                 Text(session.isMain ? "メインチャット" : session.title)
-                    .font(.body)
+                    .font(.subheadline)
+                    .foregroundStyle(.primary)
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, 12)
-            .padding(.vertical, 13)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(session.key == model.selectedSessionKey ? ChatTheme.canvas : Color.clear, in: RoundedRectangle(cornerRadius: 14))
+            .padding(.vertical, 10)
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            .background(isSelected ? ChatTheme.secondaryCanvas : Color.clear, in: RoundedRectangle(cornerRadius: 11))
         }
         .buttonStyle(.plain)
         .contextMenu {
@@ -168,6 +196,7 @@ struct RootView: View {
                 Button("名前を変更", systemImage: "pencil") { renameText = session.title; renaming = session }
             }
         }
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
         .accessibilityIdentifier(session.isMain ? "mainChatRow" : "sideChatRow")
     }
 
@@ -175,7 +204,12 @@ struct RootView: View {
         NavigationStack {
             Form {
                 Section {
-                    HStack(spacing: 14) { AgentAvatar(size: 42); VStack(alignment: .leading, spacing: 3) { Text(model.agentName).font(.headline); Text(model.isDemo ? "サンプルの会話を表示中" : "あなたの Gateway に接続").font(.footnote).foregroundStyle(.secondary) } }
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(model.agentName).font(.headline)
+                        Text(model.isDemo ? "サンプルの会話を表示中" : "あなたの Gateway に接続")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 Section("接続") {
                     Label(connectionLabel, systemImage: model.connectionState == .connected ? "checkmark.circle" : "network")

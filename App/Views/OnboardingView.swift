@@ -16,7 +16,6 @@ struct OnboardingView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 28) {
                 VStack(alignment: .leading, spacing: 18) {
-                    AgentAvatar(size: 64)
                     Text("Oh My\nOpenClaw")
                         .font(.system(.largeTitle, design: .rounded, weight: .bold))
                         .tracking(-0.8)

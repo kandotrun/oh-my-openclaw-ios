@@ -120,12 +120,11 @@ struct ChatScreen: View {
 
     private var header: some View {
         ChatGlassGroup {
-            HStack(alignment: .top) {
+            HStack(alignment: .center) {
                 QuietIconButton(symbol: "line.3.horizontal", label: "会話を開く", action: openMenu)
                     .accessibilityIdentifier("menuButton")
                 Spacer(minLength: 4)
                 VStack(spacing: 5) {
-                    AgentAvatar(size: 35)
                     Text(model.agentName).font(.headline)
                     ActivityPill(activity: model.activity, agentName: model.agentName)
                 }

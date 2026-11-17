@@ -27,19 +27,6 @@ struct QuietIconButton: View {
     }
 }
 
-struct AgentAvatar: View {
-    var size: CGFloat = 36
-
-    var body: some View {
-        Image(systemName: "sparkles")
-            .font(.system(size: size * 0.43, weight: .medium))
-            .foregroundStyle(ChatTheme.accent)
-            .frame(width: size, height: size)
-            .background(ChatTheme.accent.opacity(0.09), in: Circle())
-            .accessibilityHidden(true)
-    }
-}
-
 struct ActivityPill: View {
     let activity: ActivityState
     let agentName: String
