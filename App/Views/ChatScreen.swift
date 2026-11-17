@@ -118,8 +118,9 @@ struct ChatScreen: View {
                 .frame(maxWidth: .infinity)
         }
         .background(ChatTheme.canvas)
-        .navigationTitle(model.agentName)
+        .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbarBackground(.hidden, for: .navigationBar)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button(sidebarVisible ? "会話一覧を隠す" : "会話を開く", systemImage: sidebarVisible ? "sidebar.left" : "line.3.horizontal", action: openMenu)
@@ -133,7 +134,9 @@ struct ChatScreen: View {
 
     private var statusHeader: some View {
         VStack(spacing: 6) {
-            ActivityPill(activity: model.activity, agentName: model.agentName)
+            if model.activity != .idle {
+                ActivityPill(activity: model.activity, agentName: model.agentName)
+            }
             if model.isDemo {
                 Text("デモ")
                     .font(.system(size: 10, weight: .medium))

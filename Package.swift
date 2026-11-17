@@ -7,8 +7,10 @@ let package = Package(
     products: [.library(name: "OhMyOpenClawCore", targets: ["OhMyOpenClawCore"])],
     targets: [
         .target(name: "OhMyOpenClawCore"),
-        .target(name: "OhMyOpenClawState", dependencies: ["OhMyOpenClawCore"], path: "App", exclude: ["Assets.xcassets", "Input", "Views", "OhMyOpenClawApp.swift", "PrivacyInfo.xcprivacy"], sources: ["AppModel.swift", "CredentialStore.swift", "ChatLayout.swift"]),
+        .target(name: "OhMyOpenClawState", dependencies: ["OhMyOpenClawCore"], path: "App", exclude: ["AppIcon.icon", "Assets.xcassets", "Input", "Views", "OhMyOpenClawApp.swift", "PrivacyInfo.xcprivacy"], sources: ["AppModel.swift", "CredentialStore.swift", "ChatLayout.swift"]),
+        .target(name: "OhMyOpenClawInput", path: "App/Input", exclude: ["AttachmentLoader.swift", "DictationController.swift", "QRScannerView.swift"], sources: ["DictationCallbacks.swift"]),
         .testTarget(name: "OhMyOpenClawCoreTests", dependencies: ["OhMyOpenClawCore"]),
         .testTarget(name: "OhMyOpenClawStateTests", dependencies: ["OhMyOpenClawState", "OhMyOpenClawCore"]),
+        .testTarget(name: "OhMyOpenClawInputTests", dependencies: ["OhMyOpenClawInput"]),
     ]
 )

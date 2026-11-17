@@ -19,12 +19,12 @@ final class DictationController {
         let session = UUID()
         generation = session
         let speechAllowed = await withCheckedContinuation { continuation in
-            SFSpeechRecognizer.requestAuthorization { status in continuation.resume(returning: status == .authorized) }
+            SFSpeechRecognizer.requestAuthorization(DictationCallbacks.speechAuthorization(continuation))
         }
         guard generation == session else { return }
         guard speechAllowed else { errorMessage = "音声入力を使うには、設定で音声認識を許可してください。"; return }
         let microphoneAllowed = await withCheckedContinuation { continuation in
-            AVAudioApplication.requestRecordPermission { allowed in continuation.resume(returning: allowed) }
+            AVAudioApplication.requestRecordPermission(completionHandler: DictationCallbacks.microphoneAuthorization(continuation))
         }
         guard generation == session else { return }
         guard microphoneAllowed else { errorMessage = "音声入力を使うには、設定でマイクを許可してください。"; return }
@@ -46,23 +46,18 @@ final class DictationController {
             guard format.sampleRate > 0, format.channelCount > 0 else {
                 throw NSError(domain: "Dictation", code: 1, userInfo: [NSLocalizedDescriptionKey: "マイクを利用できません。接続状態を確認してください。"])
             }
-            input.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in recognitionRequest.append(buffer) }
+            input.installTap(onBus: 0, bufferSize: 1024, format: format, block: DictationCallbacks.audioTap(for: recognitionRequest))
             engine = audioEngine
             request = recognitionRequest
             isRecording = true
-            recognitionTask = recognizer.recognitionTask(with: recognitionRequest) { [weak self] result, error in
-                let text = result?.bestTranscription.formattedString
-                let finished = result?.isFinal == true
-                let failed = error != nil
-                Task { @MainActor [weak self] in
-                    guard let self, self.generation == session, self.isRecording else { return }
-                    if let text { onPartial(text) }
-                    if finished || failed {
-                        self.stop()
-                        if failed && text == nil { self.errorMessage = "音声を認識できませんでした。マイクを押してもう一度試してください。" }
-                    }
+            recognitionTask = recognizer.recognitionTask(with: recognitionRequest, resultHandler: DictationCallbacks.recognition { [weak self] update in
+                guard let self, self.generation == session, self.isRecording else { return }
+                if let text = update.text { onPartial(text) }
+                if update.isFinal || update.failed {
+                    self.stop()
+                    if update.failed && update.text == nil { self.errorMessage = "音声を認識できませんでした。マイクを押してもう一度試してください。" }
                 }
-            }
+            })
             audioEngine.prepare()
             try audioEngine.start()
         } catch {
