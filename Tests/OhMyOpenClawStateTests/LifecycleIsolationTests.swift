@@ -95,11 +95,9 @@ private func savedDraft(_ text: String) -> ConversationStore {
     }
 
     @Test func overlappingSwitchDoesNotPublishAnIncomingStoreBeforeItsLoadCompletes() async {
-        let previous = UserDefaults.standard.object(forKey: "useDemo")
-        defer { if let previous { UserDefaults.standard.set(previous, forKey: "useDemo") } else { UserDefaults.standard.removeObject(forKey: "useDemo") } }
         let diskA = StoredConversations(savedDraft("A private draft"))
         let diskB = StoredConversations(savedDraft("B saved draft"), holdLoad: true)
-        let app = AppModel(service: LifecycleGateway(), initialStore: savedDraft("A private draft"), initialPersistence: diskA, initialNamespace: "A", persistenceFactory: { _ in diskB })
+        let app = AppModel(service: LifecycleGateway(), initialStore: savedDraft("A private draft"), initialPersistence: diskA, initialNamespace: "A", persistenceFactory: { _ in diskB }, profileRepository: TestGatewayProfileRepository())
         let first = Task { await app.startDemo() }
         await diskB.waitForLoad()
         #expect(app.connectionState == .connecting)
@@ -122,11 +120,9 @@ private func savedDraft(_ text: String) -> ConversationStore {
     }
 
     @Test func backgroundInvalidatesAStillLoadingDestinationWithoutOverwritingIt() async {
-        let previous = UserDefaults.standard.object(forKey: "useDemo")
-        defer { if let previous { UserDefaults.standard.set(previous, forKey: "useDemo") } else { UserDefaults.standard.removeObject(forKey: "useDemo") } }
         let diskA = StoredConversations(savedDraft("A private draft"))
         let diskB = StoredConversations(savedDraft("B saved draft"), holdLoad: true)
-        let app = AppModel(service: LifecycleGateway(), initialStore: savedDraft("A private draft"), initialPersistence: diskA, initialNamespace: "A", persistenceFactory: { _ in diskB })
+        let app = AppModel(service: LifecycleGateway(), initialStore: savedDraft("A private draft"), initialPersistence: diskA, initialNamespace: "A", persistenceFactory: { _ in diskB }, profileRepository: TestGatewayProfileRepository())
         let switching = Task { await app.startDemo() }
         await diskB.waitForLoad()
         await app.background()
@@ -138,11 +134,9 @@ private func savedDraft(_ text: String) -> ConversationStore {
     }
 
     @Test func foregroundRestartsSavedDemoRestoreInterruptedDuringItsInitialLoad() async {
-        let previous = UserDefaults.standard.object(forKey: "useDemo")
-        defer { if let previous { UserDefaults.standard.set(previous, forKey: "useDemo") } else { UserDefaults.standard.removeObject(forKey: "useDemo") } }
-        UserDefaults.standard.set(true, forKey: "useDemo")
         let disk = StoredConversations(savedDraft("restored draft"), holdLoad: true)
-        let app = AppModel(persistenceFactory: { _ in disk })
+        var profiles = GatewayProfiles(); profiles.useDemo = true
+        let app = AppModel(persistenceFactory: { _ in disk }, profileRepository: TestGatewayProfileRepository(profiles))
         let restoring = Task { await app.restore() }
         await disk.waitForLoad()
         await app.background()
@@ -155,11 +149,9 @@ private func savedDraft(_ text: String) -> ConversationStore {
     }
 
     @Test func editsDuringTheFinalOutgoingSaveStayWithTheirOriginalOwner() async {
-        let previous = UserDefaults.standard.object(forKey: "useDemo")
-        defer { if let previous { UserDefaults.standard.set(previous, forKey: "useDemo") } else { UserDefaults.standard.removeObject(forKey: "useDemo") } }
         let diskA = StoredConversations(savedDraft("A initial"))
         let diskB = StoredConversations(savedDraft("B saved"), holdLoad: true)
-        let app = AppModel(service: LifecycleGateway(), initialStore: savedDraft("A initial"), initialPersistence: diskA, initialNamespace: "A", persistenceFactory: { _ in diskB })
+        let app = AppModel(service: LifecycleGateway(), initialStore: savedDraft("A initial"), initialPersistence: diskA, initialNamespace: "A", persistenceFactory: { _ in diskB }, profileRepository: TestGatewayProfileRepository())
         let switching = Task { await app.startDemo() }
         await diskB.waitForLoad()
         app.draftText = "A first edit"

@@ -4,13 +4,14 @@ import OhMyOpenClawCore
 struct OnboardingView: View {
     @Bindable var model: AppModel
     @State private var urlText = ""
+    @State private var alias = ""
     @State private var secret = ""
     @State private var password = false
     @State private var setupCode = ""
     @State private var useSetupCode = false
     @State private var showScanner = false
 
-    private var isConnecting: Bool { model.connectionState == .connecting }
+    private var isConnecting: Bool { model.changingConnection || model.connectionState == .connecting }
 
     var body: some View {
         ScrollView {
@@ -27,7 +28,21 @@ struct OnboardingView: View {
                 }
                 .padding(.top, 36)
 
+                if !model.savedGateways.isEmpty {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("保存済みの Gateway").font(.subheadline.weight(.medium))
+                        GatewaySelector(model: model, addGateway: clearForm)
+                        Text("保存した接続情報で切り替えられます。")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
+                }
+
                 VStack(alignment: .leading, spacing: 18) {
+                    TextField("表示名（任意・空欄はホスト名）", text: $alias)
+                        .padding(15)
+                        .background(ChatTheme.secondaryCanvas, in: RoundedRectangle(cornerRadius: 14))
+                        .accessibilityIdentifier("connectionAlias")
+
                     Picker("接続方法", selection: $useSetupCode) {
                         Text("接続情報").tag(false)
                         Text("セットアップコード").tag(true)
@@ -86,7 +101,14 @@ struct OnboardingView: View {
                     }
 
                     Button {
-                        Task { await model.connect(urlText: urlText, secret: secret, password: password, setupCode: useSetupCode ? setupCode : "") }
+                        let submittedURL = urlText, submittedSecret = secret, submittedAlias = alias
+                        let submittedCode = useSetupCode ? setupCode : ""
+                        let submittedPassword = password
+                        Task {
+                            await model.connect(urlText: submittedURL, secret: submittedSecret, password: submittedPassword, setupCode: submittedCode, alias: submittedAlias)
+                            if secret == submittedSecret { secret = "" }
+                            if setupCode == submittedCode { setupCode = "" }
+                        }
                     } label: {
                         HStack(spacing: 10) {
                             if isConnecting { ProgressView().tint(.white) }
@@ -115,6 +137,7 @@ struct OnboardingView: View {
                     .chatGlassButton()
                     .buttonBorderShape(.capsule)
                     .controlSize(.large)
+                    .disabled(isConnecting)
                     .accessibilityIdentifier("demoButton")
                     Text("デモはサンプルの会話です。Gateway や AI には接続しません。")
                         .font(.footnote)
@@ -135,6 +158,10 @@ struct OnboardingView: View {
         .sheet(isPresented: $showScanner) { QRScannerView { setupCode = $0 } }
     }
 
+    private func clearForm() {
+        urlText = ""; alias = ""; secret = ""; setupCode = ""; password = false; useSetupCode = false
+    }
+
     @ViewBuilder
     private var connectionFeedback: some View {
         switch model.connectionState {
@@ -151,6 +178,7 @@ struct OnboardingView: View {
                         .chatGlassButton()
                         .buttonBorderShape(.capsule)
                         .frame(minHeight: 44)
+                        .disabled(isConnecting)
                 }
             }
             .padding(16)

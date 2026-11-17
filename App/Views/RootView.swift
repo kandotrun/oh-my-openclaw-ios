@@ -87,23 +87,18 @@ struct RootView: View {
 
     private func drawer(width: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 10) {
                 Text(model.agentName)
                     .font(.title3.weight(.semibold))
                     .lineLimit(1)
-                if model.isDemo {
-                    Text("デモ")
-                        .font(.caption2.weight(.medium))
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 3)
-                        .background(ChatTheme.secondaryCanvas, in: Capsule())
-                }
-                Spacer(minLength: 0)
+                GatewaySelector(model: model, addGateway: {
+                    setDrawer(false); showConnection = true
+                }, didSelect: { setDrawer(false) })
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 12)
             .padding(.top, 20)
-            .padding(.bottom, 24)
+            .padding(.bottom, 20)
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 4) {
@@ -226,8 +221,42 @@ struct RootView: View {
                 }
                 Section("接続") {
                     Label(connectionLabel, systemImage: model.connectionState == .connected ? "checkmark.circle" : "network")
-                    Button("接続を変更") { showSettings = false; showConnection = true }
+                    if let gateway = model.activeGateway {
+                        LabeledContent("Gateway", value: gateway.label)
+                    }
+                    Button("再接続") { Task { await model.retryConnection() } }
+                        .disabled(model.changingConnection || model.connectionState == .connecting)
                     Button("接続を切る", role: .destructive) { showSettings = false; Task { await model.disconnect() } }
+                        .disabled(model.changingConnection)
+                }
+                Section("保存済みの Gateway") {
+                    ForEach(model.savedGateways) { profile in
+                        HStack(spacing: 12) {
+                            Button {
+                                showSettings = false
+                                Task { await model.switchGateway(profile) }
+                            } label: {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    HStack {
+                                        Text(profile.label).foregroundStyle(.primary)
+                                        if model.activeGateway?.id == profile.id { Image(systemName: "checkmark").font(.caption) }
+                                    }
+                                    Text(profile.endpoint).font(.caption).foregroundStyle(.secondary)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            .buttonStyle(.borderless)
+                            .disabled(model.changingConnection || model.connectionState == .connecting)
+                            NavigationLink {
+                                GatewayProfileSettings(model: model, profile: profile)
+                            } label: {
+                                Image(systemName: "pencil").accessibilityLabel("\(profile.label) の名前を変更")
+                            }
+                            .fixedSize()
+                        }
+                    }
+                    Button("Gateway を追加", systemImage: "plus") { showSettings = false; showConnection = true }
+                        .disabled(model.changingConnection || model.connectionState == .connecting)
                 }
                 Section("このアプリ") {
                     LabeledContent("バージョン", value: "0.1")

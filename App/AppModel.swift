@@ -28,7 +28,11 @@ final class AppModel {
 
     @ObservationIgnored private var service: (any GatewayServing)?
     @ObservationIgnored private var hello: GatewayHello?
-    @ObservationIgnored private var endpoint: URL?
+    private(set) var endpoint: URL?
+    private(set) var gatewayProfiles = GatewayProfiles()
+    @ObservationIgnored private var profilesLoaded = false
+    @ObservationIgnored private let profileRepository: any GatewayProfilePersisting
+    @ObservationIgnored private let connectionAccess: GatewayConnectionAccess
     @ObservationIgnored private var eventTask: Task<Void, Never>?
     @ObservationIgnored private var saveTask: Task<Void, Never>?
     @ObservationIgnored private var refreshTask: Task<Void, Never>?
@@ -50,13 +54,18 @@ final class AppModel {
     @ObservationIgnored private var restoring = false
     @ObservationIgnored private var reconnectTask: Task<Void, Never>?
     @ObservationIgnored private(set) var attemptedAutomaticRecovery = false
-    @ObservationIgnored private var changingConnection = false
+    private(set) var changingConnection = false
     @ObservationIgnored private var connectionSwitch: UUID?
     @ObservationIgnored private var sceneGeneration = UUID()
     @ObservationIgnored private var inBackground = false
     @ObservationIgnored private var agentIdentityRequest = UUID()
     @ObservationIgnored private var agentIdentityTask: Task<Void, Never>?
 
+    var savedGateways: [SavedGateway] { gatewayProfiles.profiles }
+    var activeGateway: SavedGateway? {
+        guard !isDemo, let endpoint else { return nil }
+        return savedGateways.first { $0.endpoint == endpoint.absoluteString }
+    }
     var sessions: [ChatSession] { store.sessions }
     var selectedSession: ChatSession? { store.selectedSession }
     var selectedSessionKey: String? { selectedSession?.key }
@@ -88,8 +97,11 @@ final class AppModel {
 
     init(service: (any GatewayServing)? = nil, initialStore: ConversationStore = ConversationStore(), policy: JSONValue = .null,
          initialPersistence: (any ConversationPersisting)? = nil, initialNamespace: String? = nil,
-         persistenceFactory: @escaping @Sendable (String) throws -> any ConversationPersisting = { try ConversationPersistence(namespace: $0) }) {
+         persistenceFactory: @escaping @Sendable (String) throws -> any ConversationPersisting = { try ConversationPersistence(namespace: $0) },
+         profileRepository: any GatewayProfilePersisting = DefaultsGatewayProfileRepository(),
+         connectionAccess: GatewayConnectionAccess = .live) {
         self.service = service; self.store = initialStore
+        self.profileRepository = profileRepository; self.connectionAccess = connectionAccess
         self.persistence = initialPersistence; self.persistenceNamespace = initialNamespace; self.persistenceFactory = persistenceFactory
         if service != nil { connectionState = .connected; hello = GatewayHello(payload: .object(["policy": policy])) }
     }
@@ -98,9 +110,11 @@ final class AppModel {
         guard service == nil, !restoring, !changingConnection else { return }
         restoring = true
         defer { restoring = false }
-        if UserDefaults.standard.bool(forKey: "useDemo") { await startDemo(); return }
-        guard let text = UserDefaults.standard.string(forKey: "lastGateway"), let url = try? GatewayEndpoint.parse(text) else { return }
-        await connect(urlText: url.absoluteString, secret: "", password: false, setupCode: "")
+        do { try loadProfiles() } catch { errorMessage = error.localizedDescription; return }
+        if gatewayProfiles.useDemo { await startDemo(); return }
+        guard let text = gatewayProfiles.lastActiveEndpoint,
+              let profile = savedGateways.first(where: { $0.endpoint == text }) else { return }
+        await switchGateway(profile)
     }
 
     func startDemo() async {
@@ -110,10 +124,12 @@ final class AppModel {
         await retireConnection()
         do {
             try validateConnectionSwitch(transaction)
+            try loadProfiles()
             try await loadStore(namespace: "local-demo", transaction: transaction)
             try validateConnectionSwitch(transaction)
             isDemo = true; endpoint = nil; autoConnect = true
-            UserDefaults.standard.set(true, forKey: "useDemo")
+            var profiles = gatewayProfiles; profiles.useDemo = true
+            try profileRepository.save(profiles); gatewayProfiles = profiles
             // A fresh deterministic service owns its own history; cached drafts remain useful.
             store.pending = [:]
             service = DemoGateway()
@@ -122,34 +138,59 @@ final class AppModel {
         catch { fail(error) }
     }
 
-    func connect(urlText: String, secret: String, password: Bool, setupCode: String) async {
-        guard !changingConnection else { return }
+    func switchGateway(_ profile: SavedGateway) async {
+        do { try loadProfiles() } catch { errorMessage = error.localizedDescription; return }
+        guard savedGateways.contains(where: { $0.endpoint == profile.endpoint }) else { return }
+        await connect(urlText: profile.endpoint, secret: "", password: false, setupCode: "", savedEndpoint: profile.endpoint)
+    }
+
+    func renameGateway(_ profile: SavedGateway, alias: String) {
+        do {
+            try loadProfiles()
+            var profiles = gatewayProfiles; profiles.rename(endpoint: profile.endpoint, alias: alias)
+            try profileRepository.save(profiles); gatewayProfiles = profiles
+        } catch { errorMessage = error.localizedDescription }
+    }
+
+    private func loadProfiles() throws {
+        guard !profilesLoaded else { return }
+        gatewayProfiles = try profileRepository.load(); profilesLoaded = true
+    }
+
+    func connect(urlText: String, secret: String, password: Bool, setupCode: String, alias: String? = nil) async {
+        await connect(urlText: urlText, secret: secret, password: password, setupCode: setupCode, alias: alias, savedEndpoint: nil)
+    }
+
+    private func connect(urlText: String, secret: String, password: Bool, setupCode: String, alias: String? = nil, savedEndpoint: String?) async {
+        guard !changingConnection, !inBackground, !Task.isCancelled else { return }
         var transactionStarted = false
         defer { if transactionStarted { finishConnectionSwitch() } }
         reconnectTask?.cancel(); attemptedAutomaticRecovery = false
         do {
+            try loadProfiles()
             let url: URL
             let credentials: GatewayCredentials
             if !setupCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 let setup = try GatewayEndpoint.decodeSetupCode(setupCode)
                 url = setup.url; credentials = GatewayCredentials(bootstrapToken: setup.bootstrapToken)
             } else {
-                url = try GatewayEndpoint.parse(urlText)
+                let exactEndpoint = savedEndpoint ?? savedGateways.first(where: { $0.endpoint == urlText })?.endpoint
+                url = try exactEndpoint.map { try SavedGateway.exactURL($0) } ?? GatewayEndpoint.parse(urlText)
                 let value = secret.isEmpty ? nil : secret
-                if value == nil { credentials = try CredentialStore.read(GatewayCredentials.self, key: credentialKey(url)) ?? GatewayCredentials() }
+                if value == nil { credentials = try connectionAccess.read(credentialKey(url)) ?? GatewayCredentials() }
                 else { credentials = password ? GatewayCredentials(password: value) : GatewayCredentials(token: value) }
             }
             guard let transaction = beginConnectionSwitch() else { return }
             transactionStarted = true
             await retireConnection()
             try validateConnectionSwitch(transaction)
-            try CredentialStore.write(credentials, key: credentialKey(url))
+            try connectionAccess.write(credentials, credentialKey(url))
             try await loadStore(namespace: url.absoluteString, transaction: transaction)
             try validateConnectionSwitch(transaction)
             endpoint = url; isDemo = false; autoConnect = true
-            UserDefaults.standard.set(false, forKey: "useDemo")
-            UserDefaults.standard.set(url.absoluteString, forKey: "lastGateway")
-            service = GatewayClient(endpoint: url, credentials: credentials, identity: try identity())
+            var profiles = gatewayProfiles; try profiles.activate(url, alias: alias)
+            try profileRepository.save(profiles); gatewayProfiles = profiles
+            service = try connectionAccess.makeService(url, credentials)
             await establishConnection()
         } catch is CancellationError { if service == nil { connectionState = .disconnected } }
         catch { if connectionState == .connected { errorMessage = error.localizedDescription } else { fail(error) } }
@@ -171,8 +212,8 @@ final class AppModel {
         await retireConnection()
         do {
             try validateConnectionSwitch(transaction)
-            let credentials = try CredentialStore.read(GatewayCredentials.self, key: credentialKey(endpoint)) ?? GatewayCredentials()
-            service = GatewayClient(endpoint: endpoint, credentials: credentials, identity: try identity())
+            let credentials = try connectionAccess.read(credentialKey(endpoint)) ?? GatewayCredentials()
+            service = try connectionAccess.makeService(endpoint, credentials)
             await establishConnection()
         } catch is CancellationError { if service == nil { connectionState = .disconnected } }
         catch { fail(error) }
@@ -205,7 +246,7 @@ final class AppModel {
     }
 
     private func beginConnectionSwitch() -> UUID? {
-        guard !changingConnection else { return nil }
+        guard !changingConnection, !inBackground, !Task.isCancelled else { return nil }
         changingConnection = true; connectionState = .connecting
         let transaction = UUID(); connectionSwitch = transaction
         return transaction
@@ -215,7 +256,7 @@ final class AppModel {
     }
     private func finishConnectionSwitch() {
         changingConnection = false; connectionSwitch = nil
-        if !inBackground, autoConnect, connectionState == .disconnected {
+        if !inBackground, !Task.isCancelled, autoConnect, connectionState == .disconnected {
             reconnectTask = Task { [weak self] in
                 guard !Task.isCancelled, let self, !self.inBackground, self.autoConnect, !self.changingConnection, self.connectionState == .disconnected else { return }
                 self.reconnectTask = nil
@@ -229,22 +270,25 @@ final class AppModel {
         guard let service else { return }
         let generation = connectionGeneration
         connectionState = .connecting; errorMessage = nil; notice = nil
-        let stream = await service.events()
-        eventTask = Task { [weak self] in
-            for await event in stream {
-                guard !Task.isCancelled, let self, self.connectionGeneration == generation else { break }
-                await self.handle(event)
-            }
-        }
         do {
+            let stream = await service.events()
+            guard connectionGeneration == generation, !inBackground else { return }
+            try Task.checkCancellation()
+            eventTask = Task { [weak self] in
+                for await event in stream {
+                    guard !Task.isCancelled, let self, self.connectionGeneration == generation else { break }
+                    await self.handle(event)
+                }
+            }
             let received = try await service.connect()
-            guard connectionGeneration == generation else { return }
+            guard connectionGeneration == generation, !inBackground else { return }
+            try Task.checkCancellation()
             hello = received
             if let endpoint, let token = received.payload["auth"]["deviceToken"].stringValue {
-                let old = try CredentialStore.read(GatewayCredentials.self, key: credentialKey(endpoint))
+                let old = try connectionAccess.read(credentialKey(endpoint))
                 let scopes = received.payload["auth"]["scopes"].arrayValue?.compactMap(\.stringValue)
                 let storedScopes = old?.deviceToken == token ? (old?.scopes ?? scopes) : scopes
-                try CredentialStore.write(GatewayCredentials(deviceToken: token, scopes: storedScopes), key: credentialKey(endpoint))
+                try connectionAccess.write(GatewayCredentials(deviceToken: token, scopes: storedScopes), credentialKey(endpoint))
             }
             let defaults = received.snapshot["sessionDefaults"]
             guard let agentID = defaults["defaultAgentId"].stringValue, let mainKey = defaults["mainSessionKey"].stringValue else {
@@ -255,12 +299,21 @@ final class AppModel {
             if store.selectedSession == nil { store.selectedID = agentID + "|" + mainKey }
             attemptedAutomaticRecovery = false
             connectionState = .connected
-            do { try await refreshRoster() } catch { notice = "会話一覧を更新できませんでした。再接続でやり直せます。" }
-            guard connectionGeneration == generation else { return }
+            do { try await refreshRoster() }
+            catch { if connectionGeneration == generation { notice = "会話一覧を更新できませんでした。再接続でやり直せます。" } }
+            guard connectionGeneration == generation, !inBackground else { return }
+            try Task.checkCancellation()
             if let selected = store.selectedSession { await selectSession(selected) }
+            guard connectionGeneration == generation, !inBackground else { return }
+            try Task.checkCancellation()
             try await persistNow()
         } catch {
-            guard connectionGeneration == generation else { return }
+            guard connectionGeneration == generation, !inBackground else { return }
+            if error is CancellationError || Task.isCancelled {
+                connectionState = .disconnected
+                await retireConnection()
+                return
+            }
             if let failure = error as? GatewayFailure, failure.code == "NOT_PAIRED" || failure.details["code"].stringValue == "PAIRING_REQUIRED" {
                 connectionState = .pairing(requestID: failure.details["requestId"].stringValue ?? "", message: "Gateway 側でこの端末を承認してから、再接続してください。")
             } else { fail(error) }
@@ -789,10 +842,6 @@ final class AppModel {
         return .object(body)
     }
 
-    private func identity() throws -> DeviceIdentity {
-        if let data = try CredentialStore.read(Data.self, key: "device-identity") { return try DeviceIdentity(privateKeyData: data) }
-        let identity = DeviceIdentity(); try CredentialStore.write(identity.privateKeyData, key: "device-identity"); return identity
-    }
     private func credentialKey(_ url: URL) -> String { "gateway:" + digest(url.absoluteString) }
     private func digest(_ value: String) -> String { SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined() }
     private func loadStore(namespace: String, transaction: UUID) async throws {
