@@ -104,6 +104,26 @@ private func chat(_ state: String, run: String = "run", session: ChatSession = m
     #expect(store.selectedDraft.text.isEmpty)
 }
 
+@Test func emptyHistoryWithoutReceiptEventIDsRetainsEveryUncertainSubmission() throws {
+    var store = fixtureStore()
+    var submitted: [PendingSubmission] = []
+    for text in ["first unsent input", "second unsent input", "third unsent input"] {
+        store.setDraft(ComposerDraft(text: text), for: main.id)
+        let submission = try store.prepareSubmission(for: main, policy: .null)
+        store.markUncertain(submission.id)
+        submitted.append(submission)
+    }
+    store.applyHistory(.object(["sessionId": .string(main.sessionID!), "messages": .array([])]), for: main)
+    #expect(store.pending.count == submitted.count)
+    #expect(store.selectedMessages.count == submitted.count)
+    #expect(store.selectedDraft.text == "third unsent input")
+    for submission in submitted {
+        #expect(store.pending[submission.id]?.accepted == false)
+        #expect(store.pending[submission.id]?.params == submission.params)
+        #expect(store.selectedMessages.contains { $0.runID == submission.id && $0.delivery == .uncertain })
+    }
+}
+
 @Test func conversationHistoryCannotReplaceNewPhysicalSessionOrEraseDraft() {
     var store = fixtureStore()
     store.setDraft(ComposerDraft(text: "composing"), for: main.id)

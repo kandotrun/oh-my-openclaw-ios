@@ -239,7 +239,8 @@ public struct ConversationStore: Codable, Sendable {
         let receipts = payload["inputReceipts"].arrayValue ?? []
         for submission in Array(pending.values) where submission.target.id == target.id && submission.target.sessionID == target.sessionID {
             let receipt = receipts.first { $0["runId"].stringValue == submission.id }
-            let stored = rows.contains { $0.sourceID == submission.id + ":user" || ($0.runID == submission.id && $0.role == .user) || $0.sourceID == receipt?["consumedByEventId"].stringValue }
+            let consumedEventID = receipt?["consumedByEventId"].stringValue
+            let stored = rows.contains { $0.sourceID == submission.id + ":user" || ($0.runID == submission.id && $0.role == .user) || (consumedEventID != nil && $0.sourceID == consumedEventID) }
             if stored || ["pending", "consumed"].contains(receipt?["state"].stringValue ?? "") {
                 acknowledge(submission.id)
                 if stored {
