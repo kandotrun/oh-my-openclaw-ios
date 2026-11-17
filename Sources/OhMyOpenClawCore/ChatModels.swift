@@ -42,8 +42,16 @@ public struct ChatMessage: Codable, Sendable, Equatable, Identifiable {
     public var runID: String?
     public var sourceID: String?
     public var idempotencyKey: String?
-    public init(id: String = UUID().uuidString, role: Role, text: String, attachments: [ChatAttachment] = [], delivery: Delivery = .complete, runID: String? = nil, sourceID: String? = nil, idempotencyKey: String? = nil) {
+    public var isToolMessage: Bool?
+    /// Internal history records retain their identity for paging and reconciliation,
+    /// but only authored conversation content belongs in the transcript UI.
+    public var isConversationMessage: Bool {
+        if isToolMessage == true { return !attachments.isEmpty }
+        return (role == .user || role == .assistant) && (!text.isEmpty || !attachments.isEmpty)
+    }
+    public init(id: String = UUID().uuidString, role: Role, text: String, attachments: [ChatAttachment] = [], delivery: Delivery = .complete, runID: String? = nil, sourceID: String? = nil, idempotencyKey: String? = nil, isToolMessage: Bool? = nil) {
         self.id = id; self.role = role; self.text = text; self.attachments = attachments; self.delivery = delivery; self.runID = runID; self.sourceID = sourceID; self.idempotencyKey = idempotencyKey
+        self.isToolMessage = isToolMessage
     }
 }
 

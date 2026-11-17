@@ -252,11 +252,21 @@ public struct ConversationStore: Codable, Sendable {
         var rows = transcripts[session.id] ?? []
         let index = rows.firstIndex { $0.id == messageID }
         var row = index.map { rows[$0] } ?? ChatMessage(id: messageID, role: .assistant, text: "", delivery: .pending, runID: runID)
+        var internalSnapshot = false
         if payload.objectValue?["message"] != nil, payload["message"] != .null {
             let snapshot = Self.parseMessage(payload["message"], fallbackID: messageID)
-            row.text = snapshot.text
-            row.attachments = snapshot.attachments
-            row.sourceID = snapshot.sourceID
+            if snapshot.role == .assistant {
+                row.text = snapshot.text
+                row.attachments = snapshot.attachments
+                row.sourceID = snapshot.sourceID
+            } else {
+                internalSnapshot = true
+                if snapshot.isToolMessage == true, !snapshot.attachments.isEmpty {
+                    for attachment in snapshot.attachments where !row.attachments.contains(where: { $0.id == attachment.id }) {
+                        row.attachments.append(attachment)
+                    }
+                }
+            }
         } else if state == "delta" {
             let delta = payload["deltaText"].stringValue ?? ""
             if payload["replace"].boolValue == true { row.text = delta } else { row.text += delta }
@@ -268,7 +278,7 @@ public struct ConversationStore: Codable, Sendable {
             if pending[runID] != nil { acknowledge(runID) }
             if let userIndex = rows.firstIndex(where: { $0.id == runID + ":user" }) { rows[userIndex].delivery = .accepted }
         } else {
-            activeRunIDs[session.id] = runID; activities[session.id] = .responding
+            activeRunIDs[session.id] = runID; activities[session.id] = internalSnapshot ? .working : .responding
         }
         if index != nil { rows[index!] = row }
         else if !row.text.isEmpty || !row.attachments.isEmpty { rows.append(row) }
@@ -369,18 +379,12 @@ public struct ConversationStore: Codable, Sendable {
     }
 
     public static func parseMessage(_ value: JSONValue, fallbackID: String) -> ChatMessage {
-        let role = ChatMessage.Role(rawValue: value["role"].stringValue ?? "assistant") ?? .system
-        var text = value["text"].stringValue ?? value["content"].stringValue ?? ""
-        var attachments: [ChatAttachment] = []
-        for block in value["content"].arrayValue ?? [] {
-            if block["type"].stringValue == "text", let part = block["text"].stringValue { text += part }
-            else if let attachment = ChatAttachment.parse(block: block, fallbackID: fallbackID + ":attachment:\(attachments.count)") { attachments.append(attachment) }
-        }
+        let content = ChatMessageContent.project(value, fallbackID: fallbackID)
         let metadata = value["__openclaw"]
         let id = metadata["id"].stringValue ?? value["id"].stringValue ?? fallbackID
         let runID = metadata["runId"].stringValue ?? value["runId"].stringValue
         let idempotencyKey = metadata["idempotencyKey"].stringValue ?? value["idempotencyKey"].stringValue
-        return ChatMessage(id: id, role: role, text: text, attachments: attachments, runID: runID, sourceID: id, idempotencyKey: idempotencyKey)
+        return ChatMessage(id: id, role: content.role, text: content.text, attachments: content.attachments, runID: runID, sourceID: id, idempotencyKey: idempotencyKey, isToolMessage: content.isToolMessage ? true : nil)
     }
 
     /// A durable record may project to several rows. Keep record identity apart from display identity.

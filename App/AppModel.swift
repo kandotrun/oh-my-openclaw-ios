@@ -60,7 +60,7 @@ final class AppModel {
     var composerContextID: String {
         [isDemo ? "local-demo" : endpoint?.absoluteString ?? "unconfigured", selectedSession?.agentID ?? "", selectedSession?.key ?? "", selectedSession?.sessionID ?? "", connectionGeneration.uuidString, selectionGeneration.uuidString].joined(separator: "|")
     }
-    var messages: [ChatMessage] { store.selectedMessages }
+    var messages: [ChatMessage] { store.selectedMessages.filter(\.isConversationMessage) }
     var draftText: String {
         get { store.selectedDraft.text }
         set {
