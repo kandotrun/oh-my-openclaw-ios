@@ -1,0 +1,247 @@
+import SwiftUI
+import OhMyOpenClawCore
+
+struct RootView: View {
+    @Bindable var model: AppModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var drawerOpen = false
+    @State private var showSettings = false
+    @State private var showConnection = false
+    @State private var search = ""
+    @State private var renaming: ChatSession?
+    @State private var renameText = ""
+
+    private var animation: Animation? { reduceMotion ? nil : .spring(response: 0.36, dampingFraction: 0.88) }
+
+    var body: some View {
+        GeometryReader { geometry in
+            let drawerWidth = min(304.0, geometry.size.width * 0.78)
+            ZStack(alignment: .leading) {
+                ChatTheme.canvas.ignoresSafeArea()
+                if !model.sessions.isEmpty && drawerOpen {
+                    drawer(width: drawerWidth)
+                        .opacity(drawerOpen ? 1 : 0)
+                        .accessibilityHidden(!drawerOpen)
+                }
+                Group {
+                    if model.sessions.isEmpty { OnboardingView(model: model) }
+                    else {
+                        ChatScreen(model: model, openMenu: { setDrawer(true) }, openSettings: { showSettings = true })
+                    }
+                }
+                .frame(width: geometry.size.width, height: geometry.size.height)
+                .background(ChatTheme.canvas)
+                .clipShape(RoundedRectangle(cornerRadius: drawerOpen && !reduceMotion ? 26 : 0))
+                .overlay {
+                    if drawerOpen {
+                        Color.black.opacity(0.08)
+                            .contentShape(Rectangle())
+                            .onTapGesture { setDrawer(false) }
+                            .accessibilityLabel("サイドバーを閉じる")
+                            .accessibilityAddTraits(.isButton)
+                    }
+                }
+                .offset(x: drawerOpen ? drawerWidth : 0)
+                .simultaneousGesture(DragGesture(minimumDistance: 22).onEnded { value in
+                    guard abs(value.translation.width) > abs(value.translation.height) * 2 else { return }
+                    if drawerOpen && value.translation.width < -65 { setDrawer(false) }
+                    else if !drawerOpen && value.startLocation.x < 30 && value.translation.width > 65 && !model.sessions.isEmpty { setDrawer(true) }
+                })
+            }
+            .clipped()
+        }
+        .tint(ChatTheme.accent)
+        .sheet(isPresented: $showSettings) {
+            settings
+        }
+        .sheet(isPresented: $showConnection) {
+            NavigationStack {
+                OnboardingView(model: model)
+                    .toolbar { ToolbarItem(placement: .cancellationAction) { Button("閉じる") { showConnection = false } } }
+            }
+        }
+        .onChange(of: model.connectionState) { _, state in if state == .connected { showConnection = false } }
+        .alert("会話の名前", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
+            TextField("名前", text: $renameText)
+            Button("保存") {
+                guard let session = renaming else { return }
+                let title = renameText
+                renaming = nil
+                Task { await model.renameSession(session, title: title) }
+            }
+            Button("キャンセル", role: .cancel) { renaming = nil }
+        }
+        .alert("確認してください", isPresented: Binding(get: { model.errorMessage != nil && !model.sessions.isEmpty && !showConnection }, set: { if !$0 { model.errorMessage = nil } })) {
+            Button("OK", role: .cancel) { model.errorMessage = nil }
+        } message: { Text(model.errorMessage ?? "") }
+    }
+
+    private func setDrawer(_ open: Bool) { withAnimation(animation) { drawerOpen = open } }
+
+    private func drawer(width: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                Text(model.agentName)
+                    .font(.title3.weight(.semibold))
+                    .lineLimit(1)
+                if model.isDemo {
+                    Text("デモ")
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(ChatTheme.secondaryCanvas, in: Capsule())
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 20)
+            .padding(.bottom, 24)
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(filteredSessions.filter(\.isMain)) { session in sessionRow(session) }
+                    HStack {
+                        Text("サイドチャット")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.secondary)
+                        Spacer(minLength: 8)
+                        Button {
+                            setDrawer(false)
+                            Task { await model.newSideChat() }
+                        } label: {
+                            Image(systemName: "plus")
+                                .font(.system(size: 15, weight: .medium))
+                                .foregroundStyle(.primary)
+                                .frame(width: 20, height: 20)
+                        }
+                        .chatGlassButton()
+                        .buttonBorderShape(.circle)
+                        .controlSize(.regular)
+                        .frame(minWidth: 44, minHeight: 44)
+                        .accessibilityLabel("新しいサイドチャット")
+                        .accessibilityIdentifier("newChatButton")
+                    }
+                    .padding(.leading, 12)
+                    .padding(.top, 18)
+                    ForEach(filteredSessions.filter { !$0.isMain }) { session in sessionRow(session) }
+                    if filteredSessions.isEmpty || (!search.isEmpty && !filteredSessions.contains(where: { !$0.isMain })) {
+                        Text(filteredSessions.isEmpty ? "一致する会話がありません" : "一致するサイドチャットがありません")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 12)
+                    }
+                }
+                .padding(.bottom, 20)
+            }
+            .scrollIndicators(.hidden)
+
+            ChatGlassGroup {
+                HStack(spacing: 10) {
+                    Button { setDrawer(false); showSettings = true } label: {
+                        Image(systemName: "gearshape")
+                            .font(.system(size: 18, weight: .regular))
+                            .foregroundStyle(.primary)
+                            .frame(width: 20, height: 20)
+                    }
+                    .chatGlassButton()
+                    .buttonBorderShape(.circle)
+                    .controlSize(.regular)
+                    .frame(minWidth: 44, minHeight: 44)
+                    .accessibilityLabel("設定")
+                    HStack(spacing: 8) {
+                        Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                        TextField("検索", text: $search)
+                            .font(.subheadline)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                    }
+                    .padding(.horizontal, 12)
+                    .frame(maxWidth: .infinity, minHeight: 42)
+                    .chatGlassSurface(cornerRadius: 22)
+                }
+            }
+            .padding(.top, 12)
+            .padding(.bottom, 12)
+        }
+        .padding(.horizontal, 16)
+        .frame(width: width, alignment: .leading)
+    }
+
+    private var filteredSessions: [ChatSession] {
+        model.sessions.filter { search.isEmpty || $0.title.localizedCaseInsensitiveContains(search) }
+    }
+
+    private func sessionRow(_ session: ChatSession) -> some View {
+        let isSelected = session.id == model.selectedSession?.id
+        return Button {
+            setDrawer(false)
+            Task { await model.selectSession(session) }
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: session.isMain ? "bubble.left.and.bubble.right" : "bubble.left")
+                    .font(.system(size: 18, weight: .regular))
+                    .frame(width: 22)
+                    .foregroundStyle(isSelected ? Color.primary : Color.secondary)
+                Text(session.isMain ? "メインチャット" : session.title)
+                    .font(.subheadline)
+                    .foregroundStyle(.primary)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            .background(isSelected ? ChatTheme.secondaryCanvas : Color.clear, in: RoundedRectangle(cornerRadius: 11))
+        }
+        .buttonStyle(.plain)
+        .contextMenu {
+            if !session.isMain {
+                Button("名前を変更", systemImage: "pencil") { renameText = session.title; renaming = session }
+            }
+        }
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .accessibilityIdentifier(session.isMain ? "mainChatRow" : "sideChatRow")
+    }
+
+    private var settings: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(model.agentName).font(.headline)
+                        Text(model.isDemo ? "サンプルの会話を表示中" : "あなたの Gateway に接続")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Section("接続") {
+                    Label(connectionLabel, systemImage: model.connectionState == .connected ? "checkmark.circle" : "network")
+                    Button("接続を変更") { showSettings = false; showConnection = true }
+                    Button("接続を切る", role: .destructive) { showSettings = false; Task { await model.disconnect() } }
+                }
+                Section("このアプリ") {
+                    LabeledContent("バージョン", value: "0.1")
+                    Text("チャットに集中するための、独立した OpenClaw クライアントです。プッシュ通知には対応していません。アプリを開くと会話を再同期します。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .navigationTitle("設定")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完了") { showSettings = false } } }
+        }
+    }
+
+    private var connectionLabel: String {
+        switch model.connectionState {
+        case .connected: model.isDemo ? "デモモード" : "接続済み"
+        case .connecting: "再接続中"
+        case .pairing: "端末の承認待ち"
+        case .failed: "接続を確認してください"
+        case .disconnected: "未接続"
+        }
+    }
+}
