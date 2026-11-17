@@ -59,7 +59,8 @@ private func chat(_ state: String, run: String = "run", session: ChatSession = m
     let retry = try restored.retrySubmission(original.message.id)
     #expect(retry.id == original.id)
     #expect(retry.params == original.params)
-    #expect(restored.drafts[side.id]?.text == "one submission")
+    #expect(restored.drafts[side.id]?.text == "")
+    #expect(restored.pending[original.id]?.message.text == "one submission")
     var replaced = side; replaced.sessionID = "new-physical-session"
     restored.upsertSession(replaced)
     #expect(throws: GatewayFailure.self) { try restored.retrySubmission(original.id) }
@@ -116,7 +117,7 @@ private func chat(_ state: String, run: String = "run", session: ChatSession = m
     store.applyHistory(.object(["sessionId": .string(main.sessionID!), "messages": .array([])]), for: main)
     #expect(store.pending.count == submitted.count)
     #expect(store.selectedMessages.count == submitted.count)
-    #expect(store.selectedDraft.text == "third unsent input")
+    #expect(store.selectedDraft.text.isEmpty)
     for submission in submitted {
         #expect(store.pending[submission.id]?.accepted == false)
         #expect(store.pending[submission.id]?.params == submission.params)
@@ -172,6 +173,7 @@ private func chat(_ state: String, run: String = "run", session: ChatSession = m
     #expect(store.unresolvedSubmission(matching: draft, for: main)?.id == old.id)
     var replacement = main; replacement.sessionID = "replacement"
     store.upsertSession(replacement)
+    store.setDraft(draft, for: replacement.id)
     #expect(store.unresolvedSubmission(matching: draft, for: replacement) == nil)
     let new = try store.prepareSubmission(for: replacement, policy: .null)
     #expect(new.id != old.id)
@@ -194,7 +196,7 @@ private func chat(_ state: String, run: String = "run", session: ChatSession = m
         #expect(store.selectedMessages.isEmpty)
         #expect(store.activeRunIDs[replacement.id] == nil)
         #expect(store.activities[replacement.id] == .idle)
-        #expect(store.selectedDraft.text == "original input")
+        #expect(store.selectedDraft.text.isEmpty)
     }
     #expect(store.pending[old.id]?.accepted == true)
     #expect(store.pending[old.id]?.params == old.params)
@@ -206,6 +208,7 @@ private func chat(_ state: String, run: String = "run", session: ChatSession = m
     let old = try store.prepareSubmission(for: main, policy: .null)
     var replacement = main; replacement.sessionID = "replacement"
     store.upsertSession(replacement)
+    store.setDraft(ComposerDraft(text: "same input"), for: replacement.id)
     let current = try store.prepareSubmission(for: replacement, policy: .null)
     let currentRows = store.selectedMessages
     for (index, state) in ["status", "delta", "final"].enumerated() {
@@ -213,7 +216,7 @@ private func chat(_ state: String, run: String = "run", session: ChatSession = m
         #expect(store.selectedMessages == currentRows)
         #expect(store.activeRunIDs[replacement.id] == current.id)
         #expect(store.activities[replacement.id] == .working)
-        #expect(store.selectedDraft.text == "same input")
+        #expect(store.selectedDraft.text.isEmpty)
     }
     #expect(store.pending[old.id]?.accepted == true)
     #expect(store.pending[current.id]?.accepted == false)
@@ -241,7 +244,7 @@ private func chat(_ state: String, run: String = "run", session: ChatSession = m
         #expect(restored.selectedMessages == currentRows)
         #expect(restored.activeRunIDs[replacement.id] == current.id)
         #expect(restored.activities[replacement.id] == .working)
-        #expect(restored.selectedDraft.text == "replacement input")
+        #expect(restored.selectedDraft.text.isEmpty)
     }
     #expect(restored.pending[old.id] == nil)
 }
@@ -264,6 +267,7 @@ private func chat(_ state: String, run: String = "run", session: ChatSession = m
     let old = try store.prepareSubmission(for: main, policy: .null)
     var replacement = main; replacement.sessionID = "replacement"
     store.upsertSession(replacement)
+    store.setDraft(ComposerDraft(text: "same text"), for: replacement.id)
     store.acknowledge(old.id)
     #expect(store.selectedDraft.text == "same text")
     #expect(store.pending[old.id]?.accepted == true)

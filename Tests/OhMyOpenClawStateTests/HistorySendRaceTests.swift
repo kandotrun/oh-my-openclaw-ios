@@ -79,7 +79,7 @@ private actor HeldSendPersistence: ConversationPersisting {
     await app.send()
     let runID = try #require(await service.sends.first?["idempotencyKey"].stringValue)
     await disk.pauseSaves()
-    let retrying = Task { await app.send() }
+    let retrying = Task { await app.retryPending(runID) }
     await disk.waitForSave()
     await app.stop()
     await disk.releaseSaves()

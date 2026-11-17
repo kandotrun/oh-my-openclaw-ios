@@ -382,7 +382,10 @@ final class AppModel {
             await dispatch(submission, through: service, generation: generation)
         } catch {
             if connectionGeneration == generation, !cancelledPreparedRuns.contains(original.id) {
-                store.markUncertain(submission.id)
+                // A fresh input has not been dispatched, but an earlier retry may
+                // already exist remotely and must keep its idempotency identity.
+                if isRetry { store.markUncertain(submission.id) }
+                else { store.reject(submission.id) }
                 errorMessage = error.localizedDescription
                 scheduleSave()
             }
@@ -392,11 +395,12 @@ final class AppModel {
     func retryPending(_ messageID: String) async {
         guard service != nil, connectionState == .connected else { return }
         do {
-            let submission = try store.retrySubmission(messageID)
+            var submission = try store.retrySubmission(messageID)
             guard !sendingTargets.contains(submission.target.id) else { return }
             guard (store.activities[submission.target.id] ?? .idle) == .idle, store.activeRunIDs[submission.target.id] == nil else {
                 throw GatewayFailure(code: "RUN_IN_PROGRESS", message: "現在の応答が終わってから、前のメッセージを再試行してください。")
             }
+            submission = try store.prepareRetry(submission.id)
             store.activeRunIDs[submission.target.id] = submission.id; store.activities[submission.target.id] = .working
             await sendPrepared(submission, isRetry: true)
         } catch { errorMessage = error.localizedDescription }

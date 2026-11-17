@@ -18,7 +18,7 @@ struct ChatScreen: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            header
+            if model.activity != .idle || model.isDemo { statusHeader }
             connectionNotice
             ScrollViewReader { proxy in
                 ZStack(alignment: .bottom) {
@@ -118,27 +118,22 @@ struct ChatScreen: View {
                 .frame(maxWidth: .infinity)
         }
         .background(ChatTheme.canvas)
-    }
-
-    private var header: some View {
-        ChatGlassGroup {
-            HStack(alignment: .center) {
-                QuietIconButton(symbol: sidebarVisible ? "sidebar.left" : "line.3.horizontal", label: sidebarVisible ? "会話一覧を隠す" : "会話を開く", action: openMenu)
+        .navigationTitle(model.agentName)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button(sidebarVisible ? "会話一覧を隠す" : "会話を開く", systemImage: sidebarVisible ? "sidebar.left" : "line.3.horizontal", action: openMenu)
                     .accessibilityIdentifier("menuButton")
-                Spacer(minLength: 4)
-                VStack(spacing: 5) {
-                    Text(model.agentName).font(.headline)
-                    ActivityPill(activity: model.activity, agentName: model.agentName)
-                }
-                .frame(maxWidth: .infinity)
-                Spacer(minLength: 4)
-                QuietIconButton(symbol: "ellipsis", label: "設定を開く", action: openSettings)
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("設定を開く", systemImage: "ellipsis", action: openSettings)
             }
         }
-        .padding(.horizontal, 18)
-        .padding(.top, 8)
-        .padding(.bottom, 12)
-        .overlay(alignment: .bottom) {
+    }
+
+    private var statusHeader: some View {
+        VStack(spacing: 6) {
+            ActivityPill(activity: model.activity, agentName: model.agentName)
             if model.isDemo {
                 Text("デモ")
                     .font(.system(size: 10, weight: .medium))
@@ -146,9 +141,11 @@ struct ChatScreen: View {
                     .padding(.horizontal, 7)
                     .padding(.vertical, 2)
                     .background(ChatTheme.secondaryCanvas, in: Capsule())
-                    .offset(y: 5)
             }
         }
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 18)
+        .padding(.vertical, 8)
     }
 
     @ViewBuilder

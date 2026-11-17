@@ -43,6 +43,7 @@ struct ChatComposer: View {
                         .lineLimit(1...7)
                         .padding(.horizontal, 16)
                         .padding(.vertical, 14)
+                        .frame(maxWidth: .infinity)
                         .focused($fieldFocused)
                         .chatGlassSurface(cornerRadius: 26)
                         .accessibilityIdentifier("composerField")
@@ -50,16 +51,18 @@ struct ChatComposer: View {
                             if dictation.isRecording && value != dictationLastApplied { dictation.stop() }
                         }
 
-                    Button { toggleDictation() } label: {
-                        Image(systemName: dictation.isRecording ? "waveform" : "mic")
-                            .font(.system(size: 20))
-                            .foregroundStyle(dictation.isRecording ? .red : .secondary)
+                    if model.draftText.isEmpty || dictation.isRecording {
+                        Button { toggleDictation() } label: {
+                            Image(systemName: dictation.isRecording ? "waveform" : "mic")
+                                .font(.system(size: 20))
+                                .foregroundStyle(dictation.isRecording ? .red : .secondary)
+                        }
+                        .chatGlassButton()
+                        .buttonBorderShape(.circle)
+                        .controlSize(.large)
+                        .frame(minWidth: 44, minHeight: 44)
+                        .accessibilityLabel(dictation.isRecording ? "音声入力を終える" : "音声入力")
                     }
-                    .chatGlassButton()
-                    .buttonBorderShape(.circle)
-                    .controlSize(.large)
-                    .frame(minWidth: 44, minHeight: 44)
-                    .accessibilityLabel(dictation.isRecording ? "音声入力を終える" : "音声入力")
 
                     if isRunning {
                         Button {

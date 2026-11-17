@@ -41,8 +41,9 @@ public struct ChatMessage: Codable, Sendable, Equatable, Identifiable {
     public var delivery: Delivery
     public var runID: String?
     public var sourceID: String?
-    public init(id: String = UUID().uuidString, role: Role, text: String, attachments: [ChatAttachment] = [], delivery: Delivery = .complete, runID: String? = nil, sourceID: String? = nil) {
-        self.id = id; self.role = role; self.text = text; self.attachments = attachments; self.delivery = delivery; self.runID = runID; self.sourceID = sourceID
+    public var idempotencyKey: String?
+    public init(id: String = UUID().uuidString, role: Role, text: String, attachments: [ChatAttachment] = [], delivery: Delivery = .complete, runID: String? = nil, sourceID: String? = nil, idempotencyKey: String? = nil) {
+        self.id = id; self.role = role; self.text = text; self.attachments = attachments; self.delivery = delivery; self.runID = runID; self.sourceID = sourceID; self.idempotencyKey = idempotencyKey
     }
 }
 
