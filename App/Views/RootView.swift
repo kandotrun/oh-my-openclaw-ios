@@ -113,10 +113,12 @@ struct RootView: View {
                             Image(systemName: "plus")
                                 .font(.system(size: 15, weight: .medium))
                                 .foregroundStyle(.primary)
-                                .frame(width: 44, height: 44)
-                                .contentShape(Rectangle())
+                                .frame(width: 20, height: 20)
                         }
-                        .buttonStyle(.plain)
+                        .chatGlassButton()
+                        .buttonBorderShape(.circle)
+                        .controlSize(.regular)
+                        .frame(minWidth: 44, minHeight: 44)
                         .accessibilityLabel("新しいサイドチャット")
                         .accessibilityIdentifier("newChatButton")
                     }
@@ -135,26 +137,30 @@ struct RootView: View {
             }
             .scrollIndicators(.hidden)
 
-            HStack(spacing: 10) {
-                Button { setDrawer(false); showSettings = true } label: {
-                    Image(systemName: "gearshape")
-                        .font(.system(size: 18, weight: .regular))
-                        .foregroundStyle(.primary)
-                        .frame(width: 44, height: 44)
-                        .contentShape(Rectangle())
+            ChatGlassGroup {
+                HStack(spacing: 10) {
+                    Button { setDrawer(false); showSettings = true } label: {
+                        Image(systemName: "gearshape")
+                            .font(.system(size: 18, weight: .regular))
+                            .foregroundStyle(.primary)
+                            .frame(width: 20, height: 20)
+                    }
+                    .chatGlassButton()
+                    .buttonBorderShape(.circle)
+                    .controlSize(.regular)
+                    .frame(minWidth: 44, minHeight: 44)
+                    .accessibilityLabel("設定")
+                    HStack(spacing: 8) {
+                        Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                        TextField("検索", text: $search)
+                            .font(.subheadline)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                    }
+                    .padding(.horizontal, 12)
+                    .frame(maxWidth: .infinity, minHeight: 42)
+                    .chatGlassSurface(cornerRadius: 22)
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("設定")
-                HStack(spacing: 8) {
-                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                    TextField("検索", text: $search)
-                        .font(.subheadline)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                }
-                .padding(.horizontal, 12)
-                .frame(maxWidth: .infinity, minHeight: 42)
-                .background(ChatTheme.secondaryCanvas, in: Capsule())
             }
             .padding(.top, 12)
             .padding(.bottom, 12)
