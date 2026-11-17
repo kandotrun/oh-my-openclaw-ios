@@ -159,7 +159,8 @@ struct ChatScreen: View {
                 .padding(.vertical, 9)
                 .frame(maxWidth: .infinity)
                 .background(ChatTheme.secondaryCanvas)
-        } else if model.connectionState != .connected {
+        }
+        if model.connectionState != .connected {
             Button { Task { await model.retryConnection() } } label: {
                 HStack(spacing: 8) {
                     if model.connectionState == .connecting { ProgressView().controlSize(.mini) }

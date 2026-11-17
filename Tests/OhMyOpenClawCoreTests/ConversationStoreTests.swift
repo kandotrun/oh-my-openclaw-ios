@@ -124,6 +124,22 @@ private func chat(_ state: String, run: String = "run", session: ChatSession = m
     }
 }
 
+@Test func uncertainSubmissionsKeepTheirOrderAcrossHistoryRefreshAndStoreReload() throws {
+    var store = fixtureStore()
+    let texts = (0..<10).map { "input \($0)" }
+    for text in texts {
+        store.setDraft(ComposerDraft(text: text), for: main.id)
+        let submission = try store.prepareSubmission(for: main, policy: .null)
+        store.markUncertain(submission.id)
+    }
+    var restored = try JSONDecoder().decode(ConversationStore.self, from: JSONEncoder().encode(store))
+    for _ in 0..<2 {
+        restored.applyHistory(.object(["sessionId": .string(main.sessionID!), "messages": .array([])]), for: main)
+        #expect(restored.selectedMessages.map(\.text) == texts)
+        #expect(restored.pending.count == texts.count)
+    }
+}
+
 @Test func conversationHistoryCannotReplaceNewPhysicalSessionOrEraseDraft() {
     var store = fixtureStore()
     store.setDraft(ComposerDraft(text: "composing"), for: main.id)

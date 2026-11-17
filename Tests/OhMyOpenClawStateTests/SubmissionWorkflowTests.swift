@@ -84,6 +84,23 @@ private actor SubmissionGateway: GatewayServing {
     #expect(app.messages.first?.text == "A 日本語")
 }
 
+@Test @MainActor func stopDuringLazyCreationPreventsThePreparedMessageFromSending() async {
+    let service = SubmissionGateway(holdCreation: true)
+    let side = ChatSession(key: "local:stopped", agentID: "a", title: "New side")
+    let app = model(session: side, draft: ComposerDraft(text: "keep this draft"), service: service)
+    let sending = Task { await app.send() }
+    await service.waitForCreation()
+    await app.stop()
+    await service.releaseCreation()
+    await sending.value
+    #expect(await service.sends.isEmpty)
+    #expect(await service.aborts.isEmpty)
+    #expect(app.activity == .idle)
+    #expect(app.draftText == "keep this draft")
+    #expect(app.messages.isEmpty)
+    #expect(app.canSend)
+}
+
 @Test @MainActor func ordinarySendRetriesUncertainInputWithItsOriginalIdentity() async throws {
     let service = SubmissionGateway(failFirstSend: true)
     let main = ChatSession(key: "agent:a:main", agentID: "a", sessionID: "physical", title: "Main", isMain: true)

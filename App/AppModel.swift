@@ -22,6 +22,8 @@ final class AppModel {
     private var promptTargets: [String: String] = [:]
     @ObservationIgnored private var resolvedPromptIDs = Set<String>()
     private var sendingTargets = Set<String>()
+    @ObservationIgnored private var preparingRuns: [String: Bool] = [:] // Whether this preparation retries a possibly dispatched input.
+    @ObservationIgnored private var cancelledPreparedRuns = Set<String>()
 
     @ObservationIgnored private var service: (any GatewayServing)?
     @ObservationIgnored private var hello: GatewayHello?
@@ -320,12 +322,14 @@ final class AppModel {
         } catch { errorMessage = error.localizedDescription }
     }
 
-    private func sendPrepared(_ original: PendingSubmission) async {
+    private func sendPrepared(_ original: PendingSubmission, isRetry: Bool = false) async {
         guard let service, !sendingTargets.contains(original.target.id) else { return }
         let originalID = original.target.id
         sendingTargets.insert(originalID)
+        preparingRuns[original.id] = isRetry
         var workingTargetID = originalID
         defer {
+            preparingRuns[original.id] = nil; cancelledPreparedRuns.remove(original.id)
             sendingTargets.remove(originalID); sendingTargets.remove(workingTargetID)
             if pendingHistoryRefresh.contains(originalID) || pendingHistoryRefresh.contains(workingTargetID) { scheduleQuietRefresh() }
         }
@@ -335,7 +339,7 @@ final class AppModel {
         do {
             // No network mutation precedes durable custody of the submitted bytes.
             try await persistNow()
-            guard connectionGeneration == generation else { return }
+            guard connectionGeneration == generation, !cancelledPreparedRuns.contains(original.id) else { return }
             if target.sessionID == nil {
                 var creation = store.creationRequests[target.id]
                 if creation != nil {
@@ -353,8 +357,9 @@ final class AppModel {
                     store.creationIssuedAt?[target.id] = Date()
                     try await persistNow()
                 }
+                guard connectionGeneration == generation, !cancelledPreparedRuns.contains(original.id) else { return }
                 let result = try await service.request(method: "sessions.create", params: creation!)
-                guard connectionGeneration == generation else { return }
+                guard connectionGeneration == generation, !cancelledPreparedRuns.contains(original.id) else { return }
                 guard let key = result["key"].stringValue else { throw GatewayFailure(code: "INVALID_RESPONSE", message: "新しい会話の保存先を確認できませんでした。") }
                 guard target.key.hasPrefix("local:") || key == target.key else { throw GatewayFailure(code: "SESSION_CHANGED", message: "メインチャットの保存先を確認できませんでした。") }
                 let created = parseSession(result["entry"], fallback: ChatSession(key: key, agentID: target.agentID, sessionID: result["sessionId"].stringValue, title: target.title, isMain: target.isMain))
@@ -363,18 +368,20 @@ final class AppModel {
                 target = submission.target
                 workingTargetID = target.id; sendingTargets.insert(workingTargetID)
                 try await persistNow()
+                guard connectionGeneration == generation, !cancelledPreparedRuns.contains(original.id) else { return }
                 // Subscribe before sending so the first delta cannot be missed.
                 if store.selectedID == target.id {
                     _ = try await service.request(method: "sessions.messages.subscribe", params: targetParams(target, keyName: "key", extra: ["subscriptionId": .string("foreground"), "includeApprovals": .bool(true)], includeSessionID: false))
-                    guard connectionGeneration == generation else { return }
+                    guard connectionGeneration == generation, !cancelledPreparedRuns.contains(original.id) else { return }
                     if store.selectedID == target.id { currentSubscription = target }
                 }
             }
             guard target.sessionID != nil else { throw GatewayFailure(code: "SESSION_UNKNOWN", message: "会話の保存先を確認中です。会話を開き直してから送信してください。") }
-            guard connectionGeneration == generation else { return }
+            guard connectionGeneration == generation, !cancelledPreparedRuns.contains(original.id) else { return }
+            preparingRuns[original.id] = nil
             await dispatch(submission, through: service, generation: generation)
         } catch {
-            if connectionGeneration == generation {
+            if connectionGeneration == generation, !cancelledPreparedRuns.contains(original.id) {
                 store.markUncertain(submission.id)
                 errorMessage = error.localizedDescription
                 scheduleSave()
@@ -391,7 +398,7 @@ final class AppModel {
                 throw GatewayFailure(code: "RUN_IN_PROGRESS", message: "現在の応答が終わってから、前のメッセージを再試行してください。")
             }
             store.activeRunIDs[submission.target.id] = submission.id; store.activities[submission.target.id] = .working
-            await sendPrepared(submission)
+            await sendPrepared(submission, isRetry: true)
         } catch { errorMessage = error.localizedDescription }
     }
 
@@ -420,6 +427,15 @@ final class AppModel {
     func stop() async {
         guard let target = selectedSession, let runID = store.activeRunIDs[target.id], let service else { return }
         do {
+            if let isRetry = preparingRuns[runID] {
+                cancelledPreparedRuns.insert(runID)
+                if !isRetry {
+                    store.reject(runID)
+                    try await persistNow()
+                    return
+                }
+                // A retry may already exist remotely: cancel this preparation and still abort that run.
+            }
             _ = try await service.request(method: "chat.abort", params: targetParams(target, extra: ["runId": .string(runID), "userInitiated": .bool(true)]))
             // Acknowledgment is not a terminal stream event. Refresh to settle authoritative state.
             try await refreshHistory(for: target)

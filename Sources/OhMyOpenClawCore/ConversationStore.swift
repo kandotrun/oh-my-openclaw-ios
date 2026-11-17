@@ -237,7 +237,15 @@ public struct ConversationStore: Codable, Sendable {
             if !rows.contains(where: { $0.id == row.id }) { rows.append(row) }
         }
         let receipts = payload["inputReceipts"].arrayValue ?? []
-        for submission in Array(pending.values) where submission.target.id == target.id && submission.target.sessionID == target.sessionID {
+        var submissionOrder: [String: Int] = [:]
+        for (index, row) in previous.enumerated() where row.role == .user {
+            if let runID = row.runID, submissionOrder[runID] == nil { submissionOrder[runID] = index }
+        }
+        let unresolved = pending.values.filter { $0.target.id == target.id && $0.target.sessionID == target.sessionID }.sorted {
+            let left = submissionOrder[$0.id] ?? Int.max, right = submissionOrder[$1.id] ?? Int.max
+            return left == right ? $0.id < $1.id : left < right
+        }
+        for submission in unresolved {
             let receipt = receipts.first { $0["runId"].stringValue == submission.id }
             let consumedEventID = receipt?["consumedByEventId"].stringValue
             let stored = rows.contains { $0.sourceID == submission.id + ":user" || ($0.runID == submission.id && $0.role == .user) || (consumedEventID != nil && $0.sourceID == consumedEventID) }
