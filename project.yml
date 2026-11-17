@@ -26,6 +26,7 @@ targets:
         TARGETED_DEVICE_FAMILY: '1,2'
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: Oh My OpenClaw
+        INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
         INFOPLIST_KEY_NSCameraUsageDescription: Gateway のセットアップ QR コードを読み取ります。
         INFOPLIST_KEY_NSMicrophoneUsageDescription: メッセージを音声で入力します。音声は端末内で認識します。
