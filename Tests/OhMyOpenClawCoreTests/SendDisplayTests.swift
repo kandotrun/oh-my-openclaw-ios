@@ -134,6 +134,15 @@ private func userProjection(eventID: String, key: String, runID: String? = nil) 
     object["drafts"] = [displaySession.id: ["text": "same input", "attachments": []]]
     var restored = try JSONDecoder().decode(ConversationStore.self, from: JSONSerialization.data(withJSONObject: object))
     #expect(try restored.retrySubmission(sent.id).params == sent.params)
+    var edited = restored
+    edited.setDraft(ComposerDraft(text: "same input"), for: displaySession.id)
+    edited.acknowledge(sent.id)
+    #expect(edited.selectedDraft.text == "same input")
+    var rejected = restored
+    rejected.setDraft(ComposerDraft(text: "same input"), for: displaySession.id)
+    rejected.reject(sent.id)
+    #expect(rejected.selectedDraft.text == "same input")
+    #expect(rejected.pending[sent.id]?.message.delivery == .failed)
     restored.acknowledge(sent.id)
     #expect(restored.selectedDraft == ComposerDraft())
 }

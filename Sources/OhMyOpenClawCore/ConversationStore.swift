@@ -151,8 +151,7 @@ public struct ConversationStore: Codable, Sendable {
         }
         // Old snapshots retained the submitted draft until ACK. New reservations already
         // cleared it, so even an identically retyped next input must remain untouched.
-        let original = ComposerDraft(text: submission.message.text, attachments: submission.message.attachments)
-        if submission.draftRevisionAfterReservation == nil, drafts[submission.target.id] == original { setDraft(ComposerDraft(), for: submission.target.id) }
+        if ownsLegacyDraft(submission) { setDraft(ComposerDraft(), for: submission.target.id) }
     }
 
     public mutating func markUncertain(_ runID: String) {
@@ -179,7 +178,7 @@ public struct ConversationStore: Codable, Sendable {
             setDraft(original, for: target.id)
             pending[runID] = nil
             transcripts[target.id]?.removeAll { $0.id == runID + ":user" }
-        } else if submission.draftRevisionAfterReservation == nil, (drafts[target.id] ?? ComposerDraft()) == original {
+        } else if ownsLegacyDraft(submission) {
             // Legacy submissions still have their bytes in the composer.
             pending[runID] = nil
             transcripts[target.id]?.removeAll { $0.id == runID + ":user" }
@@ -206,10 +205,10 @@ public struct ConversationStore: Codable, Sendable {
         return submission
     }
 
-    public mutating func prepareRetry(_ id: String) throws -> PendingSubmission {
+    public mutating func prepareRetry(_ id: String, consumingDraft: Bool = false) throws -> PendingSubmission {
         var submission = try retrySubmission(id)
         let original = ComposerDraft(text: submission.message.text, attachments: submission.message.attachments)
-        if drafts[submission.target.id] == original {
+        if (consumingDraft && drafts[submission.target.id] == original) || ownsLegacyDraft(submission) {
             setDraft(ComposerDraft(), for: submission.target.id)
             submission.draftRevisionAfterReservation = draftRevisions?[submission.target.id]
         }
@@ -219,6 +218,14 @@ public struct ConversationStore: Codable, Sendable {
             transcripts[submission.target.id]?[index].delivery = .pending
         }
         return submission
+    }
+
+    private func ownsLegacyDraft(_ submission: PendingSubmission) -> Bool {
+        let target = submission.target
+        return submission.draftRevisionAfterReservation == nil &&
+            draftRevisions?[target.id] == nil &&
+            sessions.first(where: { $0.id == target.id })?.sessionID == target.sessionID &&
+            drafts[target.id] == ComposerDraft(text: submission.message.text, attachments: submission.message.attachments)
     }
 
     /// Applies authoritative chat events once; agent text events must never enter this reducer.

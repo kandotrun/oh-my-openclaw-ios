@@ -116,9 +116,10 @@ private actor UnwritableInputDisk: ConversationPersisting {
     let sending = Task { await app.send() }
     await gateway.waitForSend(); await gateway.finish(uncertain: true); await sending.value
     let inputID = try #require(app.messages.first?.id)
+    app.draftText = "uncertain input"
     await disk.setFailure(true)
     await app.retryPending(inputID)
-    #expect(app.draftText.isEmpty)
+    #expect(app.draftText == "uncertain input")
     #expect(app.messages.first?.id == inputID)
     #expect(app.messages.first?.delivery == .uncertain)
     #expect(await gateway.sends.count == 1)
@@ -129,5 +130,31 @@ private actor UnwritableInputDisk: ConversationPersisting {
     #expect(sends.count == 2)
     #expect(sends.first == sends.last)
     #expect(app.messages.filter { $0.role == .user }.count == 1)
+    #expect(app.draftText == "uncertain input")
     await app.disconnect()
+}
+
+@Test @MainActor func retryingAnOutboxBubblePreservesAnIdenticalNewDraft() async throws {
+    for rejected in [false, true] {
+        let session = ChatSession(key: "agent:a:main", agentID: "a", sessionID: "physical", title: "Main", isMain: true)
+        var store = ConversationStore(); store.upsertSession(session); store.selectedID = session.id
+        store.setDraft(ComposerDraft(text: "same input"), for: session.id)
+        let gateway = HeldAcknowledgment()
+        let app = AppModel(service: gateway, initialStore: store)
+        let sending = Task { await app.send() }
+        await gateway.waitForSend()
+        app.draftText = "same input"
+        await gateway.finish(reject: rejected, uncertain: !rejected)
+        await sending.value
+        let inputID = try #require(app.messages.first?.id)
+        let retrying = Task { await app.retryPending(inputID) }
+        await gateway.waitForSend()
+        #expect(app.draftText == "same input")
+        await gateway.finish(); await retrying.value
+        #expect(app.draftText == "same input")
+        let sends = await gateway.sends
+        #expect(sends.count == 2)
+        #expect(sends.first == sends.last)
+        await app.disconnect()
+    }
 }
