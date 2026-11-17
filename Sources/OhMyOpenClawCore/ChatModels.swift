@@ -1,5 +1,26 @@
 import Foundation
 
+/// A Gateway media-store reference, bound to an explicit authored transcript record.
+/// This is a locator, never a download credential or an arbitrary fetch URL.
+public struct InboundMediaReference: Codable, Sendable, Equatable, Hashable {
+    public let source: String
+    public let messageID: String
+
+    public init?(source: String, messageID: String) {
+        guard source.utf8.count <= 4096, messageID.utf8.count <= 1024, !messageID.isEmpty,
+              messageID.rangeOfCharacter(from: .controlCharacters) == nil,
+              let parts = URLComponents(string: source),
+              parts.scheme == "media", parts.host == "inbound", parts.port == nil,
+              parts.user == nil, parts.password == nil, parts.query == nil, parts.fragment == nil,
+              parts.string == source,
+              parts.percentEncodedPath.hasPrefix("/"), !parts.percentEncodedPath.hasPrefix("//") else { return nil }
+        let id = String(parts.path.dropFirst())
+        guard !id.isEmpty, id != ".", id != "..",
+              !id.contains("/"), !id.contains("\\"), id.rangeOfCharacter(from: .controlCharacters) == nil else { return nil }
+        self.source = source; self.messageID = messageID
+    }
+}
+
 public struct ChatAttachment: Codable, Sendable, Equatable, Identifiable {
     public var id: String
     public var fileName: String
@@ -9,9 +30,11 @@ public struct ChatAttachment: Codable, Sendable, Equatable, Identifiable {
     public var url: String?
     public var openURL: String?
     public var sizeBytes: Int?
-    public init(id: String = UUID().uuidString, fileName: String, mimeType: String, data: Data, artifactID: String? = nil, url: String? = nil, openURL: String? = nil, sizeBytes: Int? = nil) {
+    public var inboundMedia: InboundMediaReference?
+    public init(id: String = UUID().uuidString, fileName: String, mimeType: String, data: Data, artifactID: String? = nil, url: String? = nil, openURL: String? = nil, sizeBytes: Int? = nil, inboundMedia: InboundMediaReference? = nil) {
         self.id = id; self.fileName = fileName; self.mimeType = mimeType; self.data = data
         self.artifactID = artifactID; self.url = url; self.openURL = openURL; self.sizeBytes = sizeBytes
+        self.inboundMedia = inboundMedia
     }
     public var wireValue: JSONValue { .object(["fileName": .string(fileName), "mimeType": .string(mimeType), "content": .string(data.base64EncodedString()), "type": .string(mimeType.hasPrefix("image/") ? "image" : "file")]) }
 }

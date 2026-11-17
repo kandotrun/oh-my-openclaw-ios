@@ -2,7 +2,7 @@ import Foundation
 
 extension ChatAttachment {
     /// Keep transcript references, including the nested managed-file envelope.
-    /// References are not fetched until the reader explicitly opens the attachment.
+    /// Image previews may fetch references; documents remain explicit-open.
     public static func parse(block: JSONValue, fallbackID: String) -> ChatAttachment? {
         let type = block["type"].stringValue?.lowercased() ?? ""
         guard ["image", "file", "document", "audio", "video", "attachment"].contains(type) else { return nil }
@@ -38,6 +38,9 @@ public enum GatewayArtifactLoader {
         if !attachment.data.isEmpty {
             guard attachment.data.count <= limit else { throw tooLarge() }
             return attachment.data
+        }
+        if attachment.artifactID == nil, let inbound = attachment.inboundMedia {
+            return try await service.loadInboundMedia(inbound, session: session)
         }
         guard let artifactID = attachment.artifactID, !artifactID.isEmpty else {
             if attachment.url == nil && attachment.openURL == nil { return attachment.data }

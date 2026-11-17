@@ -1,6 +1,5 @@
 import SwiftUI
 import UIKit
-import ImageIO
 import QuickLook
 import UniformTypeIdentifiers
 import OhMyOpenClawCore
@@ -256,24 +255,46 @@ struct AttachmentPreview: View {
     let attachment: ChatAttachment
     let load: @MainActor () async throws -> Data
     @State private var loadedData: Data?
+    @State private var loadedReference: Reference?
     @State private var loading = false
     @State private var errorMessage: String?
     @State private var previewURL: URL?
     @State private var temporaryDirectory: URL?
     @State private var loadingTask: Task<Void, Never>?
+    @State private var visible = false
 
-    private var availableData: Data { loadedData ?? attachment.data }
+    private struct Reference: Hashable {
+        let id: String
+        let mimeType: String
+        let data: Data
+        let artifactID: String?
+        let url: String?
+        let openURL: String?
+        let inboundMedia: InboundMediaReference?
+
+        init(_ attachment: ChatAttachment) {
+            id = attachment.id; mimeType = attachment.mimeType; data = attachment.data
+            artifactID = attachment.artifactID; url = attachment.url; openURL = attachment.openURL
+            inboundMedia = attachment.inboundMedia
+        }
+    }
+
+    private struct PreviewRequest: Hashable {
+        let reference: Reference
+        let visible: Bool
+    }
+
+    private var reference: Reference { Reference(attachment) }
+    private var availableData: Data {
+        if !attachment.data.isEmpty { return attachment.data }
+        return loadedReference == reference ? loadedData ?? Data() : Data()
+    }
     private var isImage: Bool { attachment.mimeType.hasPrefix("image/") }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
-            if isImage, let image = thumbnail(availableData) {
-                Image(uiImage: image)
-                    .resizable()
-                    .scaledToFit()
-                    .frame(maxWidth: 260, maxHeight: 240)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                    .accessibilityLabel(attachment.fileName)
+            if isImage {
+                AttachmentThumbnail(data: availableData, fileName: attachment.fileName, presentation: .message, loading: loading)
             }
             Button(action: open) {
                 HStack(spacing: 10) {
@@ -298,10 +319,34 @@ struct AttachmentPreview: View {
             if let errorMessage { Text(errorMessage).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
         }
         .quickLookPreview($previewURL)
+        .onScrollVisibilityChange(threshold: 0.01) { visible = $0 }
+        .task(id: PreviewRequest(reference: reference, visible: visible)) {
+            loading = false
+            guard visible, isImage, availableData.isEmpty else { return }
+            loading = true; errorMessage = nil
+            let current = reference
+            defer { if !Task.isCancelled { loading = false } }
+            do {
+                let data = try await load()
+                try Task.checkCancellation()
+                loadedData = data; loadedReference = current
+            } catch is CancellationError {
+                // A changed attachment, conversation, or disappearing row owns the next load.
+            } catch {
+                guard !Task.isCancelled else { return }
+                errorMessage = error.localizedDescription
+            }
+        }
+        .onChange(of: reference) { _, _ in
+            loadingTask?.cancel(); loadingTask = nil
+            previewURL = nil; errorMessage = nil
+            loadedData = nil; loadedReference = nil
+            removeTemporaryFile()
+        }
         .onChange(of: previewURL) { _, url in if url == nil { removeTemporaryFile() } }
         .onDisappear {
             loadingTask?.cancel(); loadingTask = nil
-            previewURL = nil; loadedData = nil; loading = false
+            previewURL = nil; loading = false; visible = false
             removeTemporaryFile()
         }
     }
@@ -312,7 +357,10 @@ struct AttachmentPreview: View {
         loadingTask = Task { @MainActor in
             defer { if !Task.isCancelled { loading = false } }
             do {
-                let data = try await load()
+                let current = reference
+                let data: Data
+                if availableData.isEmpty { data = try await load() }
+                else { data = availableData }
                 try Task.checkCancellation()
                 removeTemporaryFile()
                 let directory = FileManager.default.temporaryDirectory.appendingPathComponent("OpenClaw-" + UUID().uuidString, isDirectory: true)
@@ -323,11 +371,14 @@ struct AttachmentPreview: View {
                 if URL(fileURLWithPath: name).pathExtension.isEmpty, let suffix = UTType(mimeType: attachment.mimeType)?.preferredFilenameExtension { name += "." + suffix }
                 let file = directory.appendingPathComponent(name)
                 try data.write(to: file, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
-                loadedData = data
+                loadedData = data; loadedReference = current
                 previewURL = file
-            } catch is CancellationError { removeTemporaryFile() }
+            } catch is CancellationError {
+                // Disappearance/reference changes already clear their file. An old
+                // cancelled load must not remove a newer preview's directory.
+            }
             catch {
-                guard !Task.isCancelled else { removeTemporaryFile(); return }
+                guard !Task.isCancelled else { return }
                 errorMessage = error.localizedDescription
                 removeTemporaryFile()
             }
@@ -339,11 +390,6 @@ struct AttachmentPreview: View {
         temporaryDirectory = nil
     }
 
-    private func thumbnail(_ data: Data) -> UIImage? {
-        guard !data.isEmpty, let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
-              let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceCreateThumbnailWithTransform: true, kCGImageSourceThumbnailMaxPixelSize: 1200] as CFDictionary) else { return nil }
-        return UIImage(cgImage: image)
-    }
 }
 
 private struct TypingIndicator: View {

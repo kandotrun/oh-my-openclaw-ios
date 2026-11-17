@@ -61,7 +61,39 @@ enum ChatMessageContent {
         guard role == .user || role == .assistant else {
             return Projection(role: .system, text: "", attachments: [], isToolMessage: false)
         }
+        appendInboundMedia(value, to: &attachments)
         return Projection(role: role, text: text, attachments: attachments, isToolMessage: false)
+    }
+
+    private static func appendInboundMedia(_ value: JSONValue, to attachments: inout [ChatAttachment]) {
+        guard let messageID = value["__openclaw"]["id"].stringValue ?? value["id"].stringValue else { return }
+        var seen = Set<String>()
+        let facts = (value["__openclaw"]["media"].arrayValue ?? []).compactMap { fact -> ChatAttachment? in
+            guard let source = fact["url"].stringValue ?? fact["path"].stringValue,
+                  let reference = InboundMediaReference(source: source, messageID: messageID),
+                  let mime = fact["contentType"].stringValue ?? fact["mimeType"].stringValue,
+                  mime.lowercased().hasPrefix("image/"), seen.insert(source).inserted else { return nil }
+            return ChatAttachment(id: messageID + ":media:" + source,
+                                  fileName: fact["fileName"].stringValue ?? "画像", mimeType: mime.lowercased(),
+                                  data: Data(), sizeBytes: fact["sizeBytes"].intValue, inboundMedia: reference)
+        }
+        guard !facts.isEmpty else { return }
+        let images = attachments.indices.filter { attachments[$0].mimeType.hasPrefix("image/") }
+        if images.count == facts.count {
+            // The media facts describe the same ordered images whose content blocks
+            // may have had their bytes removed from the history projection.
+            for (index, fact) in zip(images, facts) {
+                attachments[index].inboundMedia = fact.inboundMedia
+                if attachments[index].fileName == "画像" { attachments[index].fileName = fact.fileName }
+                if attachments[index].mimeType == "image/*" { attachments[index].mimeType = fact.mimeType }
+                attachments[index].sizeBytes = attachments[index].sizeBytes ?? fact.sizeBytes
+            }
+        } else {
+            attachments.removeAll { $0.mimeType.hasPrefix("image/") && $0.data.isEmpty && $0.artifactID == nil && $0.url == nil && $0.openURL == nil }
+            for fact in facts where !attachments.contains(where: { $0.url == fact.inboundMedia?.source || $0.inboundMedia == fact.inboundMedia }) {
+                attachments.append(fact)
+            }
+        }
     }
 
     private static func type(of value: JSONValue) -> String { value["type"].stringValue?.lowercased() ?? "" }

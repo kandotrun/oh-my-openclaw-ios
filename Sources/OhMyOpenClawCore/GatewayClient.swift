@@ -84,6 +84,18 @@ public actor GatewayClient: GatewayServing {
         return try await sendRequest(method: method, params: params, epoch: epoch)
     }
 
+    public func loadInboundMedia(_ reference: InboundMediaReference, session target: ChatSession) async throws -> Data {
+        guard admitted, let hello, let token = hello.payload["auth"]["deviceToken"].stringValue ?? credentials.deviceToken, !token.isEmpty else {
+            throw GatewayFailure(code: "MEDIA_PAIRING_REQUIRED", message: "画像を読み込むには、この端末を承認した Gateway に再接続してください。")
+        }
+        let currentEpoch = epoch
+        let data = try await GatewayInboundMediaLoader.load(reference, session: target, endpoint: endpoint, deviceToken: token)
+        try Task.checkCancellation()
+        try requireCurrent(currentEpoch)
+        guard admitted, self.hello != nil else { throw disconnectedError() }
+        return data
+    }
+
     private func establishConnection() async throws -> GatewayHello {
         try Task.checkCancellation()
         // Validate even when callers bypass the onboarding parser.

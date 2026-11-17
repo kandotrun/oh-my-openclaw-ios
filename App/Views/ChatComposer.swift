@@ -159,24 +159,45 @@ struct ChatComposer: View {
 
     private var attachmentTray: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 10) {
+            HStack(alignment: .top, spacing: 10) {
                 ForEach(model.attachments) { attachment in
-                    HStack(spacing: 8) {
-                        Image(systemName: attachment.mimeType.hasPrefix("image/") ? "photo" : "doc")
-                            .foregroundStyle(ChatTheme.accent)
-                        Text(attachment.fileName).font(.caption).lineLimit(1).frame(maxWidth: 140)
-                        Button { model.removeAttachment(attachment.id) } label: {
-                            Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary).frame(width: 28, height: 32)
+                    if attachment.mimeType.hasPrefix("image/") {
+                        VStack(alignment: .leading, spacing: 4) {
+                            AttachmentThumbnail(data: attachment.data, fileName: attachment.fileName, presentation: .draft)
+                                .overlay(alignment: .topTrailing) {
+                                    removeAttachmentButton(attachment)
+                                }
+                            Text(attachment.fileName).font(.caption2).lineLimit(1).frame(width: 88, alignment: .leading)
+                                .foregroundStyle(.secondary)
                         }
-                        .accessibilityLabel("\(attachment.fileName)を取り除く")
+                    } else {
+                        HStack(spacing: 8) {
+                            Image(systemName: "doc").foregroundStyle(ChatTheme.accent)
+                            Text(attachment.fileName).font(.caption).lineLimit(1).frame(maxWidth: 140)
+                            removeAttachmentButton(attachment)
+                        }
+                        .padding(.leading, 12)
+                        .padding(.trailing, 2)
+                        .padding(.vertical, 4)
+                        .background(ChatTheme.secondaryCanvas, in: RoundedRectangle(cornerRadius: 12))
                     }
-                    .padding(.leading, 12)
-                    .padding(.trailing, 5)
-                    .padding(.vertical, 4)
-                    .background(ChatTheme.secondaryCanvas, in: RoundedRectangle(cornerRadius: 12))
                 }
             }
         }
+    }
+
+    private func removeAttachmentButton(_ attachment: ChatAttachment) -> some View {
+        Button { model.removeAttachment(attachment.id) } label: {
+            Image(systemName: "xmark")
+                .font(.system(size: 12, weight: .semibold))
+                .frame(width: 20, height: 20)
+        }
+        .chatGlassButton()
+        .buttonBorderShape(.circle)
+        .controlSize(.small)
+        .frame(minWidth: 44, minHeight: 44)
+        .contentShape(Rectangle())
+        .accessibilityLabel("\(attachment.fileName)を取り除く")
     }
 
     private var modelPicker: some View {
