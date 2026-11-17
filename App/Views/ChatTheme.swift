@@ -17,11 +17,12 @@ struct QuietIconButton: View {
         Button(action: action) {
             Image(systemName: symbol)
                 .font(.system(size: 20, weight: .regular))
-                .frame(width: 46, height: 46)
-                .background(.ultraThinMaterial, in: Circle())
-                .overlay(Circle().strokeBorder(.primary.opacity(0.07), lineWidth: 0.5))
+                .foregroundStyle(.primary)
         }
-        .buttonStyle(.plain)
+        .chatGlassButton()
+        .buttonBorderShape(.circle)
+        .controlSize(.large)
+        .frame(minWidth: 44, minHeight: 44)
         .accessibilityLabel(label)
     }
 }

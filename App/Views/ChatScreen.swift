@@ -98,12 +98,12 @@ struct ChatScreen: View {
                         } label: {
                             Image(systemName: "chevron.down")
                                 .font(.system(size: 15, weight: .semibold))
-                                .frame(width: 44, height: 44)
-                                .background(.regularMaterial, in: Circle())
-                                .overlay(Circle().strokeBorder(.primary.opacity(0.08), lineWidth: 0.5))
-                                .shadow(color: .black.opacity(0.07), radius: 8, y: 3)
+                                .foregroundStyle(.primary)
                         }
-                        .buttonStyle(.plain)
+                        .chatGlassButton()
+                        .buttonBorderShape(.circle)
+                        .controlSize(.large)
+                        .frame(minWidth: 44, minHeight: 44)
                         .padding(.bottom, 8)
                         .accessibilityLabel("最新のメッセージへ")
                     }
@@ -114,24 +114,25 @@ struct ChatScreen: View {
             ChatComposer(model: model)
                 .frame(maxWidth: 760)
                 .frame(maxWidth: .infinity)
-                .background(ChatTheme.canvas)
         }
         .background(ChatTheme.canvas)
     }
 
     private var header: some View {
-        HStack(alignment: .top) {
-            QuietIconButton(symbol: "line.3.horizontal", label: "会話を開く", action: openMenu)
-                .accessibilityIdentifier("menuButton")
-            Spacer(minLength: 4)
-            VStack(spacing: 5) {
-                AgentAvatar(size: 35)
-                Text(model.agentName).font(.headline)
-                ActivityPill(activity: model.activity, agentName: model.agentName)
+        ChatGlassGroup {
+            HStack(alignment: .top) {
+                QuietIconButton(symbol: "line.3.horizontal", label: "会話を開く", action: openMenu)
+                    .accessibilityIdentifier("menuButton")
+                Spacer(minLength: 4)
+                VStack(spacing: 5) {
+                    AgentAvatar(size: 35)
+                    Text(model.agentName).font(.headline)
+                    ActivityPill(activity: model.activity, agentName: model.agentName)
+                }
+                .frame(maxWidth: .infinity)
+                Spacer(minLength: 4)
+                QuietIconButton(symbol: "ellipsis", label: "設定を開く", action: openSettings)
             }
-            .frame(maxWidth: .infinity)
-            Spacer(minLength: 4)
-            QuietIconButton(symbol: "ellipsis", label: "設定を開く", action: openSettings)
         }
         .padding(.horizontal, 18)
         .padding(.top, 8)
@@ -167,11 +168,14 @@ struct ChatScreen: View {
                     Text(model.connectionState == .connecting ? "再接続しています" : "接続を再開する")
                 }
                 .font(.footnote)
-                .padding(.vertical, 10)
+                .padding(.vertical, 6)
                 .frame(maxWidth: .infinity)
-                .background(ChatTheme.secondaryCanvas)
             }
-            .buttonStyle(.plain)
+            .chatGlassButton()
+            .buttonBorderShape(.capsule)
+            .controlSize(.regular)
+            .padding(.horizontal, 18)
+            .padding(.vertical, 6)
             .disabled(model.connectionState == .connecting)
         }
     }

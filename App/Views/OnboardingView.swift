@@ -46,6 +46,8 @@ struct OnboardingView: View {
                             Button { showScanner = true } label: {
                                 Label("QR を読み取る", systemImage: "qrcode.viewfinder")
                             }
+                            .chatGlassButton()
+                            .buttonBorderShape(.capsule)
                             .frame(minHeight: 44)
                             Text("接続後、Gateway 側で端末の承認が必要です。")
                                 .font(.footnote)
@@ -71,6 +73,9 @@ struct OnboardingView: View {
                                 } label: {
                                     Label("変更", systemImage: "chevron.down").font(.caption)
                                 }
+                                .chatGlassButton()
+                                .buttonBorderShape(.capsule)
+                                .controlSize(.small)
                             }
                             SecureField(password ? "パスワード" : "トークン", text: $secret)
                                 .textInputAutocapitalization(.never)
@@ -89,13 +94,13 @@ struct OnboardingView: View {
                             Text(isConnecting ? "接続中…" : "Gateway に接続")
                                 .font(.body.weight(.semibold))
                         }
-                        .frame(maxWidth: .infinity, minHeight: 52)
-                        .foregroundStyle(.white)
-                        .background(ChatTheme.accent, in: Capsule())
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 5)
                     }
-                    .buttonStyle(.plain)
+                    .chatGlassButton(prominent: true)
+                    .buttonBorderShape(.capsule)
+                    .controlSize(.large)
                     .disabled(isConnecting || (useSetupCode ? setupCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty : urlText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
-                    .opacity(isConnecting ? 0.7 : 1)
                     .accessibilityIdentifier("connectButton")
 
                     connectionFeedback
@@ -103,10 +108,14 @@ struct OnboardingView: View {
 
                 VStack(spacing: 12) {
                     Button { Task { await model.startDemo() } } label: {
-                        HStack(spacing: 8) { Text("デモを試す"); Image(systemName: "arrow.right") }
+                        Text("デモを試す")
                             .font(.body.weight(.medium))
-                            .frame(maxWidth: .infinity, minHeight: 48)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 5)
                     }
+                    .chatGlassButton()
+                    .buttonBorderShape(.capsule)
+                    .controlSize(.large)
                     .accessibilityIdentifier("demoButton")
                     Text("デモはサンプルの会話です。Gateway や AI には接続しません。")
                         .font(.footnote)
@@ -140,6 +149,8 @@ struct OnboardingView: View {
                         .font(.system(.footnote, design: .monospaced))
                         .textSelection(.enabled)
                     Button("承認後に再接続") { Task { await model.retryConnection() } }
+                        .chatGlassButton()
+                        .buttonBorderShape(.capsule)
                         .frame(minHeight: 44)
                 }
             }

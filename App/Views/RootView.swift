@@ -102,26 +102,35 @@ struct RootView: View {
                 }
             }
 
-            HStack(spacing: 12) {
-                Button { setDrawer(false); showSettings = true } label: {
-                    Image(systemName: "gearshape").font(.title3).frame(width: 40, height: 44)
+            ChatGlassGroup {
+                HStack(spacing: 12) {
+                    Button { setDrawer(false); showSettings = true } label: {
+                        Image(systemName: "gearshape").font(.title3).foregroundStyle(.primary)
+                    }
+                    .chatGlassButton()
+                    .buttonBorderShape(.circle)
+                    .controlSize(.large)
+                    .frame(minWidth: 44, minHeight: 44)
+                    .accessibilityLabel("設定")
+                    HStack(spacing: 7) {
+                        Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                        TextField("検索", text: $search).font(.subheadline)
+                    }
+                    .padding(.horizontal, 11)
+                    .frame(minHeight: 42)
+                    .chatGlassSurface(cornerRadius: 22)
+                    Button {
+                        setDrawer(false)
+                        Task { await model.newSideChat() }
+                    } label: { Image(systemName: "square.and.pencil").font(.title3).foregroundStyle(.primary) }
+                    .chatGlassButton()
+                    .buttonBorderShape(.circle)
+                    .controlSize(.large)
+                    .frame(minWidth: 44, minHeight: 44)
+                    .accessibilityLabel("新しいサイドチャット")
+                    .accessibilityIdentifier("newChatButton")
                 }
-                .accessibilityLabel("設定")
-                HStack(spacing: 7) {
-                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                    TextField("検索", text: $search).font(.subheadline)
-                }
-                .padding(.horizontal, 11)
-                .frame(minHeight: 42)
-                .background(ChatTheme.canvas.opacity(0.65), in: Capsule())
-                Button {
-                    setDrawer(false)
-                    Task { await model.newSideChat() }
-                } label: { Image(systemName: "square.and.pencil").font(.title3).frame(width: 40, height: 44) }
-                .accessibilityLabel("新しいサイドチャット")
-                .accessibilityIdentifier("newChatButton")
             }
-            .buttonStyle(.plain)
             .padding(.bottom, 12)
         }
         .padding(.horizontal, 20)
