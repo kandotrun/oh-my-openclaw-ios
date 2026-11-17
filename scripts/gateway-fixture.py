@@ -132,6 +132,14 @@ class Client(socketserver.StreamRequestHandler):
             row.update({key: value for key, value in params.items() if key in ("model", "thinkingLevel", "label")})
             self.result(frame, {"ok": True, "key": params["key"], "entry": row, "resolved": row})
         elif method == "chat.history":
+            selector_error = None
+            if "offset" in params and "messageId" in params:
+                selector_error = "offset and messageId cannot be used together"
+            elif "sessionId" in params and "messageId" not in params:
+                selector_error = "sessionId requires messageId"
+            if selector_error:
+                self.send({"type": "res", "id": frame["id"], "ok": False, "error": {"code": "INVALID_REQUEST", "message": selector_error}})
+                return
             key = params["sessionKey"]
             self.result(frame, {"sessionKey": key, "sessionId": self.server.sessions[key]["sessionId"], "messages": self.server.messages.get(key, []), "sessionInfo": {**self.server.sessions[key], "hasActiveRun": False, "activeRunIds": []}})
         elif method == "chat.send":

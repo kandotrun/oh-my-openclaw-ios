@@ -7,6 +7,7 @@ import OhMyOpenClawCore
 
 struct ChatScreen: View {
     @Bindable var model: AppModel
+    let sidebarVisible: Bool
     let openMenu: () -> Void
     let openSettings: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -72,6 +73,7 @@ struct ChatScreen: View {
                         .frame(maxWidth: .infinity)
                     }
                     .scrollDismissesKeyboard(.interactively)
+                    .defaultScrollAnchor(followsBottom ? .bottom : nil, for: .sizeChanges)
                     .onScrollGeometryChange(for: Bool.self) { geometry in
                         geometry.contentSize.height - geometry.contentOffset.y - geometry.containerSize.height < 90
                     } action: { _, value in
@@ -121,7 +123,7 @@ struct ChatScreen: View {
     private var header: some View {
         ChatGlassGroup {
             HStack(alignment: .center) {
-                QuietIconButton(symbol: "line.3.horizontal", label: "会話を開く", action: openMenu)
+                QuietIconButton(symbol: sidebarVisible ? "sidebar.left" : "line.3.horizontal", label: sidebarVisible ? "会話一覧を隠す" : "会話を開く", action: openMenu)
                     .accessibilityIdentifier("menuButton")
                 Spacer(minLength: 4)
                 VStack(spacing: 5) {
