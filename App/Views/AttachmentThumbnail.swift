@@ -8,13 +8,14 @@ struct AttachmentThumbnail: View {
     enum Presentation {
         case draft, message
 
-        var maxPixelSize: Int { self == .draft ? 264 : 900 }
+        var maxPixelSize: Int { self == .draft ? 168 : 900 }
     }
 
     let data: Data
     let fileName: String
     let presentation: Presentation
     var loading = false
+    var failed = false
     @State private var image: UIImage?
     @State private var decodedData: Data?
     @State private var decoding = false
@@ -31,7 +32,7 @@ struct AttachmentThumbnail: View {
             if decodedData == data, let image {
                 if presentation == .draft {
                     Image(uiImage: image).resizable().scaledToFill()
-                        .frame(width: 88, height: 88)
+                        .frame(width: 56, height: 56)
                         .clipped()
                 } else {
                     Image(uiImage: image).resizable().scaledToFit()
@@ -40,16 +41,20 @@ struct AttachmentThumbnail: View {
             } else {
                 VStack(spacing: 8) {
                     if loading || decoding || (!data.isEmpty && decodedData != data) { ProgressView() }
-                    else { Image(systemName: "photo").font(.title2).foregroundStyle(.secondary) }
-                    if presentation == .message, !loading, !decoding, !data.isEmpty, decodedData == data {
-                        Text("画像を表示できません").font(.caption).foregroundStyle(.secondary)
+                    else { Image(systemName: failed ? "arrow.clockwise" : "photo").font(.title2).foregroundStyle(.secondary) }
+                    if presentation == .message, !loading, !decoding {
+                        if failed {
+                            Text("タップして再試行").font(.caption).foregroundStyle(.secondary)
+                        } else if !data.isEmpty, decodedData == data {
+                            Text("画像を開く").font(.caption).foregroundStyle(.secondary)
+                        }
                     }
                 }
-                .frame(width: presentation == .draft ? 88 : 230, height: presentation == .draft ? 88 : 150)
+                .frame(width: presentation == .draft ? 56 : 230, height: presentation == .draft ? 56 : 150)
                 .background(ChatTheme.secondaryCanvas)
             }
         }
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .clipShape(RoundedRectangle(cornerRadius: presentation == .draft ? 10 : 12))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(fileName)
         .onScrollVisibilityChange(threshold: 0.01) { visible = $0 }

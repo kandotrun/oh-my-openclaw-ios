@@ -294,29 +294,38 @@ struct AttachmentPreview: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
             if isImage {
-                AttachmentThumbnail(data: availableData, fileName: attachment.fileName, presentation: .message, loading: loading)
-            }
-            Button(action: open) {
-                HStack(spacing: 10) {
-                    if loading { ProgressView().controlSize(.small) }
-                    else { Image(systemName: isImage ? "photo" : "doc").font(.title3).foregroundStyle(ChatTheme.accent) }
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(attachment.fileName).font(.subheadline).lineLimit(2)
-                        let size = availableData.isEmpty ? attachment.sizeBytes ?? 0 : availableData.count
-                        if size > 0 { Text(ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file)).font(.caption).foregroundStyle(.secondary) }
-                        Text(loading ? "読み込み中…" : isImage ? "画像を開く" : "ファイルを開く")
-                            .font(.caption)
-                            .foregroundStyle(ChatTheme.accent)
-                    }
-                    Image(systemName: "arrow.up.right.square").foregroundStyle(.secondary)
+                Button(action: open) {
+                    AttachmentThumbnail(data: availableData, fileName: attachment.fileName, presentation: .message, loading: loading, failed: errorMessage != nil)
+                        .contentShape(RoundedRectangle(cornerRadius: 12))
                 }
-                .padding(11)
-                .background(ChatTheme.canvas.opacity(0.65), in: RoundedRectangle(cornerRadius: 11))
+                .buttonStyle(.plain)
+                .disabled(loading)
+                .accessibilityLabel("\(attachment.fileName)を開く")
+                .accessibilityHint(errorMessage == nil ? "画像を拡大表示します" : "画像を読み込めませんでした。タップして再試行します")
+                .accessibilityValue(loading ? "読み込み中" : "")
+            } else {
+                Button(action: open) {
+                    HStack(spacing: 10) {
+                        if loading { ProgressView().controlSize(.small) }
+                        else { Image(systemName: "doc").font(.title3).foregroundStyle(ChatTheme.accent) }
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(attachment.fileName).font(.subheadline).lineLimit(2)
+                            let size = availableData.isEmpty ? attachment.sizeBytes ?? 0 : availableData.count
+                            if size > 0 { Text(ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file)).font(.caption).foregroundStyle(.secondary) }
+                            Text(loading ? "読み込み中…" : "ファイルを開く")
+                                .font(.caption)
+                                .foregroundStyle(ChatTheme.accent)
+                        }
+                        Image(systemName: "arrow.up.right.square").foregroundStyle(.secondary)
+                    }
+                    .padding(11)
+                    .background(ChatTheme.canvas.opacity(0.65), in: RoundedRectangle(cornerRadius: 11))
+                }
+                .buttonStyle(.plain)
+                .disabled(loading)
+                .accessibilityLabel("\(attachment.fileName)を開く")
+                if let errorMessage { Text(errorMessage).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
             }
-            .buttonStyle(.plain)
-            .disabled(loading)
-            .accessibilityLabel("\(attachment.fileName)を開く")
-            if let errorMessage { Text(errorMessage).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
         }
         .quickLookPreview($previewURL)
         .onScrollVisibilityChange(threshold: 0.01) { visible = $0 }

@@ -12,7 +12,8 @@ protocol ConversationPersisting: Sendable {
 final class AppModel {
     var connectionState: ConnectionState = .disconnected
     var isDemo = false
-    var agentName = "Claw"
+    private var agentNames: [String: String] = [:]
+    var agentName: String { selectedSession.flatMap { agentNames[$0.agentID] } ?? "エージェント" }
     var models: [ModelOption] = []
     var errorMessage: String?
     var notice: String?
@@ -53,6 +54,8 @@ final class AppModel {
     @ObservationIgnored private var connectionSwitch: UUID?
     @ObservationIgnored private var sceneGeneration = UUID()
     @ObservationIgnored private var inBackground = false
+    @ObservationIgnored private var agentIdentityRequest = UUID()
+    @ObservationIgnored private var agentIdentityTask: Task<Void, Never>?
 
     var sessions: [ChatSession] { store.sessions }
     var selectedSession: ChatSession? { store.selectedSession }
@@ -255,9 +258,6 @@ final class AppModel {
             do { try await refreshRoster() } catch { notice = "会話一覧を更新できませんでした。再接続でやり直せます。" }
             guard connectionGeneration == generation else { return }
             if let selected = store.selectedSession { await selectSession(selected) }
-            if let result = try? await service.request(method: "agents.identity.get", params: .object(["agentId": .string(agentID)])), connectionGeneration == generation {
-                agentName = result["name"].stringValue ?? result["identity"]["name"].stringValue ?? "Claw"
-            }
             try await persistNow()
         } catch {
             guard connectionGeneration == generation else { return }
@@ -269,6 +269,8 @@ final class AppModel {
 
     private func retireConnection() async {
         connectionGeneration = UUID(); selectionGeneration = UUID()
+        agentIdentityRequest = UUID(); agentIdentityTask?.cancel(); agentIdentityTask = nil
+        agentNames = [:]
         eventTask?.cancel(); eventTask = nil; refreshTask?.cancel(); refreshTask = nil
         let previous = service; service = nil; hello = nil; currentSubscription = nil
         promptRecords = []; promptTargets = [:]; questionRecords = [:]; questionAnswers = [:]
@@ -278,14 +280,17 @@ final class AppModel {
     }
 
     func newSideChat() async {
+        agentIdentityTask?.cancel(); agentIdentityTask = nil
         guard let current = selectedSession ?? sessions.first(where: \.isMain) else { return }
         let session = ChatSession(key: "local:" + UUID().uuidString, agentID: current.agentID, title: "新しいサイドチャット")
         store.upsertSession(session); store.selectedID = session.id; selectionGeneration = UUID()
         models = []; hasMoreHistory = false; loadedOlderHistory = false; scheduleSave()
         await refreshModels(for: session)
+        await refreshAgentName(for: session)
     }
 
     func selectSession(_ session: ChatSession) async {
+        agentIdentityTask?.cancel(); agentIdentityTask = nil
         store.selectedID = session.id; selectionGeneration = UUID()
         errorMessage = nil; hasMoreHistory = false; nextHistoryOffset = 0; loadedOlderHistory = false; models = []
         scheduleSave()
@@ -306,6 +311,20 @@ final class AppModel {
         guard selectionGeneration == selection, connectionGeneration == generation else { return }
         await refreshModels(for: store.selectedSession ?? session)
         await refreshPrompts()
+        guard selectionGeneration == selection, connectionGeneration == generation else { return }
+        await refreshAgentName(for: session)
+    }
+
+    private func refreshAgentName(for target: ChatSession) async {
+        guard connectionState == .connected, selectedSession?.agentID == target.agentID, let service else { return }
+        let generation = connectionGeneration, selection = selectionGeneration, request = UUID()
+        agentIdentityRequest = request
+        guard let result = try? await service.request(method: "agent.identity.get", params: .object(["agentId": .string(target.agentID)])),
+              !Task.isCancelled, connectionGeneration == generation, selectionGeneration == selection,
+              agentIdentityRequest == request, selectedSession?.agentID == target.agentID,
+              result["agentId"].stringValue == nil || result["agentId"].stringValue == target.agentID,
+              let name = result["name"].stringValue?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty else { return }
+        agentNames[target.agentID] = name
     }
 
     func send() async {
@@ -615,6 +634,17 @@ final class AppModel {
             return
         }
         let payload = event.payload
+        if event.name == "agent.identity.changed" || event.name == "config.changed" {
+            if event.name == "config.changed" { agentNames = [:] }
+            else if let id = payload["agentId"].stringValue { agentNames[id] = nil }
+            if let target = selectedSession,
+               event.name == "config.changed" || payload["agentId"].stringValue == target.agentID {
+                agentIdentityRequest = UUID()
+                agentIdentityTask?.cancel()
+                agentIdentityTask = Task { [weak self] in await self?.refreshAgentName(for: target) }
+            }
+            return
+        }
         if event.name == "chat", let session = store.matchingSession(key: payload["sessionKey"].stringValue ?? "", agentID: payload["agentId"].stringValue) {
             streamRevisions[session.id, default: 0] += 1
             store.applyChatEvent(payload)
