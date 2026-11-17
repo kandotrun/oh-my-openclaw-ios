@@ -80,4 +80,11 @@ public protocol GatewayServing: Sendable {
     func request(method: String, params: JSONValue) async throws -> JSONValue
     func events() async -> AsyncStream<GatewayEvent>
     func disconnect() async
+    func loadInboundMedia(_ reference: InboundMediaReference, session: ChatSession) async throws -> Data
+}
+
+extension GatewayServing {
+    public func loadInboundMedia(_ reference: InboundMediaReference, session: ChatSession) async throws -> Data {
+        throw GatewayFailure(code: "ATTACHMENT_UNAVAILABLE", message: "この接続では画像を取得できません。Gateway に再接続してください。")
+    }
 }

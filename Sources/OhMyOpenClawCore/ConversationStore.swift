@@ -290,8 +290,23 @@ public struct ConversationStore: Codable, Sendable {
         guard let current = sessions.first(where: { $0.id == target.id }), current.sessionID == target.sessionID else { return 0 }
         if let serverID = payload["sessionId"].stringValue, let physical = target.sessionID, serverID != physical { return 0 }
         let previous = transcripts[target.id] ?? []
-        var rows = Self.parseMessages(payload["messages"].arrayValue ?? [], fallbackPrefix: "history")
+        let records = payload["messages"].arrayValue ?? []
         let receipts = payload["inputReceipts"].arrayValue ?? []
+        let authoredIDs = Set(records.compactMap { $0["__openclaw"]["id"].stringValue ?? $0["id"].stringValue }.filter { !$0.isEmpty })
+        var rows = Self.parseMessages(records, fallbackPrefix: "history").map { row in
+            let prior = previous.first { old in
+                guard old.role == row.role else { return false }
+                if let key = row.idempotencyKey, Self.matchesSubmission(old, runID: key) { return true }
+                guard let source = row.sourceID, authoredIDs.contains(source) else { return false }
+                if old.id == row.id { return true }
+                return receipts.contains { receipt in
+                    guard receipt["consumedByEventId"].stringValue == source,
+                          let runID = receipt["runId"].stringValue else { return false }
+                    return Self.matchesSubmission(old, runID: runID)
+                }
+            }
+            return prior.map { Self.retainingLocalAttachments(in: row, from: $0) } ?? row
+        }
         var olderRows: [ChatMessage] = []
         if preservingOlderHistory, payload["hasMore"].boolValue == true, let firstID = rows.first?.id,
            let boundary = previous.firstIndex(where: { $0.id == firstID }) {
@@ -311,6 +326,10 @@ public struct ConversationStore: Codable, Sendable {
             }
             let consumedEventID = row.runID.flatMap { runID in
                 receipts.first { $0["runId"].stringValue == runID }?["consumedByEventId"].stringValue
+            }
+            if let key = row.idempotencyKey,
+               let prior = previous.first(where: { Self.matchesSubmission($0, runID: key, consumedEventID: consumedEventID) }) {
+                row = Self.retainingLocalAttachments(in: row, from: prior)
             }
             let alreadyProjected = (olderRows + rows).contains { existing in
                 guard existing.role == row.role else { return false }
@@ -332,6 +351,9 @@ public struct ConversationStore: Codable, Sendable {
             let receipt = receipts.first { $0["runId"].stringValue == submission.id }
             let consumedEventID = receipt?["consumedByEventId"].stringValue
             let matchingRows = (olderRows + rows).filter { Self.matchesSubmission($0, runID: submission.id, consumedEventID: consumedEventID) }
+            for index in rows.indices where Self.matchesSubmission(rows[index], runID: submission.id, consumedEventID: consumedEventID) {
+                rows[index] = Self.retainingLocalAttachments(in: rows[index], from: submission.message)
+            }
             let storedRows = matchingRows.filter { $0.delivery != .failed }
             let stored = !storedRows.isEmpty
             let cancelled = receipt?["state"].stringValue == "cancelled" || matchingRows.contains { $0.delivery == .failed }
@@ -347,7 +369,12 @@ public struct ConversationStore: Codable, Sendable {
                     for row in storedRows {
                         if let runID = row.runID { settledRunTargets?[runID] = submission.target }
                     }
-                    pending[submission.id] = nil
+                    // A custody projection is not yet the durable transcript row.
+                    // Keep its input ID so the next refresh requests the receipt
+                    // that bridges custody to the canonical message and its media.
+                    if storedRows.contains(where: { $0.delivery == .complete }) {
+                        pending[submission.id] = nil
+                    }
                 }
             }
             if matchingRows.isEmpty { rows.append(pending[submission.id]?.message ?? submission.message) }
@@ -374,6 +401,29 @@ public struct ConversationStore: Codable, Sendable {
         if let consumedEventID, row.sourceID == consumedEventID { return true }
         if let key = row.idempotencyKey { return key == runID || key == runID + ":user" }
         return row.sourceID == runID + ":user"
+    }
+
+    /// History omits inline media bytes. Retain them only after the caller proves
+    /// this is the same authored user message in the same physical conversation.
+    private static func retainingLocalAttachments(in row: ChatMessage, from prior: ChatMessage) -> ChatMessage {
+        guard row.role == .user, prior.role == .user, !prior.attachments.isEmpty else { return row }
+        var result = row
+        result.idempotencyKey = row.idempotencyKey ?? prior.idempotencyKey
+        if result.attachments.isEmpty {
+            result.attachments = prior.attachments
+        } else {
+            for index in result.attachments.indices where result.attachments[index].data.isEmpty {
+                let attachment = result.attachments[index]
+                let matching = prior.attachments.first { $0.id == attachment.id } ??
+                    (result.attachments.count == prior.attachments.count ? prior.attachments[index] : nil)
+                guard let matching, !matching.data.isEmpty,
+                      attachment.mimeType == matching.mimeType ||
+                        (attachment.mimeType.hasPrefix("image/") && matching.mimeType.hasPrefix("image/")) else { continue }
+                result.attachments[index].data = matching.data
+                if attachment.mimeType == "image/*" { result.attachments[index].mimeType = matching.mimeType }
+            }
+        }
+        return result
     }
 
     public func matchingSession(key: String, agentID: String?) -> ChatSession? {
