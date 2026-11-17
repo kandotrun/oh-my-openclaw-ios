@@ -25,7 +25,7 @@ struct ChatComposer: View {
             ChatGlassGroup {
                 HStack(alignment: .bottom, spacing: 8) {
                     Menu {
-                        Button("写真を選ぶ", systemImage: "photo") { photoPickerContextID = model.composerContextID; showPhotoPicker = true }
+                        Button("写真を選ぶ", systemImage: "photo") { photo = nil; photoPickerContextID = model.composerContextID; showPhotoPicker = true }
                         Button("ファイルを選ぶ", systemImage: "doc") { filePickerContextID = model.composerContextID; showFilePicker = true }
                     } label: {
                         Image(systemName: "plus")
@@ -110,14 +110,18 @@ struct ChatComposer: View {
             guard let item else { return }
             guard let contextID = photoPickerContextID else { return }
             Task {
+                defer {
+                    if photo == item, photoPickerContextID == contextID {
+                        photo = nil
+                        photoPickerContextID = nil
+                    }
+                }
                 do {
                     guard let data = try await item.loadTransferable(type: Data.self) else { throw AttachmentLoader.Failure.invalidPhoto }
                     let loaded = try await Task.detached(priority: .userInitiated) { try AttachmentLoader.photo(data: data) }.value
                     guard model.composerContextID == contextID else { inputError = "会話が切り替わったため、写真の添付を中断しました。もう一度選んでください。"; return }
                     model.addAttachment(data: loaded.data, fileName: loaded.fileName, mimeType: loaded.mimeType)
                 } catch { inputError = error.localizedDescription }
-                photo = nil
-                photoPickerContextID = nil
             }
         }
         .fileImporter(isPresented: $showFilePicker, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in

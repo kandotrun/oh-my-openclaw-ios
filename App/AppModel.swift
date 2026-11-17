@@ -20,6 +20,7 @@ final class AppModel {
     private var store = ConversationStore()
     private var promptRecords: [ApprovalPrompt] = []
     private var promptTargets: [String: String] = [:]
+    @ObservationIgnored private var resolvedPromptIDs = Set<String>()
     private var sendingTargets = Set<String>()
 
     @ObservationIgnored private var service: (any GatewayServing)?
@@ -269,6 +270,7 @@ final class AppModel {
         eventTask?.cancel(); eventTask = nil; refreshTask?.cancel(); refreshTask = nil
         let previous = service; service = nil; hello = nil; currentSubscription = nil
         promptRecords = []; promptTargets = [:]; questionRecords = [:]; questionAnswers = [:]
+        resolvedPromptIDs = []
         store.retireTransientState()
         await previous?.disconnect()
     }
@@ -613,6 +615,7 @@ final class AppModel {
         }
         if ["exec.approval.requested", "plugin.approval.requested", "question.requested"].contains(event.name) { addPrompt(event.name, payload: payload); return }
         if ["exec.approval.resolved", "plugin.approval.resolved", "question.resolved"].contains(event.name), let id = payload["id"].stringValue {
+            resolvedPromptIDs.insert(id)
             promptRecords.removeAll { $0.id == id || $0.id.hasPrefix(id + "|") }; questionRecords[id] = nil; questionAnswers[id] = nil
         }
     }
@@ -638,7 +641,7 @@ final class AppModel {
 
     private func addPrompt(_ name: String, payload: JSONValue) {
         let request = payload["request"] != .null ? payload["request"] : payload
-        guard let requestID = payload["id"].stringValue, let session = store.matchingSession(key: request["sessionKey"].stringValue ?? payload["sessionKey"].stringValue ?? "", agentID: request["agentId"].stringValue ?? payload["agentId"].stringValue), payload["status"].stringValue == nil || payload["status"].stringValue == "pending" else { return }
+        guard let requestID = payload["id"].stringValue, !resolvedPromptIDs.contains(requestID), let session = store.matchingSession(key: request["sessionKey"].stringValue ?? payload["sessionKey"].stringValue ?? "", agentID: request["agentId"].stringValue ?? payload["agentId"].stringValue), payload["status"].stringValue == nil || payload["status"].stringValue == "pending" else { return }
         if name == "question.requested" {
             questionRecords[requestID] = payload
             for question in payload["questions"].arrayValue ?? [] {
@@ -663,6 +666,7 @@ final class AppModel {
     func resolvePrompt(_ prompt: ApprovalPrompt, answer: String) async {
         guard let service else { return }
         let generation = connectionGeneration
+        var resolvedRequestID: String?
         do {
             if prompt.kind == "question" || prompt.kind == "secret" {
                 let parts = prompt.id.split(separator: "|", maxSplits: 1).map(String.init)
@@ -674,13 +678,17 @@ final class AppModel {
                 let answers = questionAnswers[parts[0]] ?? [:]
                 if answers.count == record["questions"].arrayValue?.count {
                     _ = try await service.request(method: "question.resolve", params: .object(["id": .string(parts[0]), "answers": .object(["answers": .object(answers)])]))
+                    guard generation == connectionGeneration else { return }
                     questionAnswers[parts[0]] = nil; questionRecords[parts[0]] = nil
+                    resolvedRequestID = parts[0]
                 }
             } else {
                 guard prompt.choices.contains(answer) else { return }
                 _ = try await service.request(method: prompt.kind == "plugin" ? "plugin.approval.resolve" : "exec.approval.resolve", params: .object(["id": .string(prompt.id), "decision": .string(answer)]))
+                resolvedRequestID = prompt.id
             }
             guard generation == connectionGeneration else { return }
+            if let resolvedRequestID { resolvedPromptIDs.insert(resolvedRequestID) }
             promptRecords.removeAll { $0.id == prompt.id }
             if let target = promptTargets[prompt.id], store.activities[target] == .waitingForApproval { store.activities[target] = .working }
         } catch { if generation == connectionGeneration { errorMessage = error.localizedDescription } }
