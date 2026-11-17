@@ -73,6 +73,7 @@ struct ChatScreen: View {
                         .frame(maxWidth: .infinity)
                     }
                     .scrollDismissesKeyboard(.interactively)
+                    .defaultScrollAnchor(followsBottom ? .bottom : nil, for: .sizeChanges)
                     .onScrollGeometryChange(for: Bool.self) { geometry in
                         geometry.contentSize.height - geometry.contentOffset.y - geometry.containerSize.height < 90
                     } action: { _, value in
