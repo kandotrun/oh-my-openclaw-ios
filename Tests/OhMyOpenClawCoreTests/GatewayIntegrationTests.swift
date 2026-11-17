@@ -31,6 +31,38 @@ struct GatewayIntegrationTests {
             for try await valid in group { #expect(valid) }
         }
 
+        for selectors: [String: JSONValue] in [
+            ["sessionId": .string("fixture-main")],
+            ["sessionId": .string("fixture-main"), "offset": .number(100)],
+        ] {
+            var params = selectors
+            params["sessionKey"] = .string("agent:fixture:main")
+            do {
+                _ = try await client.request(method: "chat.history", params: .object(params))
+                Issue.record("A physical history selector without a message anchor must be rejected")
+            } catch let failure as GatewayFailure {
+                #expect(failure.code == "INVALID_REQUEST")
+                #expect(failure.message == "sessionId requires messageId")
+            }
+        }
+        do {
+            _ = try await client.request(method: "chat.history", params: .object([
+                "sessionKey": .string("agent:fixture:main"), "sessionId": .string("fixture-main"),
+                "messageId": .string("anchor"), "offset": .number(100),
+            ]))
+            Issue.record("Anchored history cannot be combined with offset paging")
+        } catch let failure as GatewayFailure {
+            #expect(failure.code == "INVALID_REQUEST")
+            #expect(failure.message == "offset and messageId cannot be used together")
+        }
+        for offset: JSONValue? in [nil, .number(100)] {
+            var params: [String: JSONValue] = ["sessionKey": .string("agent:fixture:main"), "limit": .number(100)]
+            if let offset { params["offset"] = offset }
+            let history = try await client.request(method: "chat.history", params: .object(params))
+            #expect(history["sessionId"].stringValue == "fixture-main")
+            #expect(history["messages"].arrayValue == [])
+        }
+
         let completion = Task { () throws -> [GatewayEvent] in
             try await withThrowingTaskGroup(of: [GatewayEvent].self) { group in
                 group.addTask {

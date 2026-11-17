@@ -508,8 +508,12 @@ final class AppModel {
         guard hasMoreHistory, let target = selectedSession, let service else { return }
         let generation = connectionGeneration; let selection = selectionGeneration
         do {
-            let result = try await service.request(method: "chat.history", params: targetParams(target, extra: ["limit": .number(100), "offset": .number(Double(nextHistoryOffset))]))
+            let result = try await service.request(method: "chat.history", params: targetParams(target, extra: ["limit": .number(100), "offset": .number(Double(nextHistoryOffset))], includeSessionID: false))
             guard connectionGeneration == generation, selectionGeneration == selection, selectedSession?.sessionID == target.sessionID else { return }
+            guard let pageSessionID = result["sessionId"].stringValue, pageSessionID == target.sessionID else {
+                try await refreshHistory(for: target)
+                return
+            }
             let older = ConversationStore.parseMessages(result["messages"].arrayValue ?? [], fallbackPrefix: "older:\(nextHistoryOffset)")
             var current = store.transcripts[target.id] ?? []
             let known = Set(current.map(\.id))
@@ -546,7 +550,8 @@ final class AppModel {
         let runIDs = store.pending.values.filter { $0.target.id == target.id && $0.target.sessionID == target.sessionID }.map { JSONValue.string($0.id) }
         var extra: [String: JSONValue] = ["limit": .number(100)]
         if !runIDs.isEmpty { extra["inputRunIds"] = .array(Array(runIDs.prefix(50))) }
-        let result = try await service.request(method: "chat.history", params: targetParams(target, extra: extra))
+        // History's sessionId belongs to messageId anchors, not current-transcript reads.
+        let result = try await service.request(method: "chat.history", params: targetParams(target, extra: extra, includeSessionID: false))
         guard generation == connectionGeneration, let current = store.sessions.first(where: { $0.id == target.id }), current.sessionID == target.sessionID else { return }
         guard streamRevisions[target.id, default: 0] == revision, store.activeRunIDs[target.id] == activeRunBeforeRequest else {
             pendingHistoryRefresh.insert(target.id)
