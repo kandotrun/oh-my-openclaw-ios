@@ -159,17 +159,13 @@ struct ChatComposer: View {
 
     private var attachmentTray: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(alignment: .top, spacing: 10) {
+            HStack(alignment: .center, spacing: 8) {
                 ForEach(model.attachments) { attachment in
                     if attachment.mimeType.hasPrefix("image/") {
-                        VStack(alignment: .leading, spacing: 4) {
-                            AttachmentThumbnail(data: attachment.data, fileName: attachment.fileName, presentation: .draft)
-                                .overlay(alignment: .topTrailing) {
-                                    removeAttachmentButton(attachment)
-                                }
-                            Text(attachment.fileName).font(.caption2).lineLimit(1).frame(width: 88, alignment: .leading)
-                                .foregroundStyle(.secondary)
-                        }
+                        AttachmentThumbnail(data: attachment.data, fileName: attachment.fileName, presentation: .draft)
+                            .overlay(alignment: .topTrailing) {
+                                removeImageButton(attachment)
+                            }
                     } else {
                         HStack(spacing: 8) {
                             Image(systemName: "doc").foregroundStyle(ChatTheme.accent)
@@ -184,6 +180,20 @@ struct ChatComposer: View {
                 }
             }
         }
+    }
+
+    private func removeImageButton(_ attachment: ChatAttachment) -> some View {
+        Button { model.removeAttachment(attachment.id) } label: {
+            Image(systemName: "xmark")
+                .font(.system(size: 9, weight: .bold))
+                .foregroundStyle(.primary)
+                .frame(width: 22, height: 22)
+                .chatGlassSurface(cornerRadius: 11)
+                .frame(width: 44, height: 44, alignment: .topTrailing)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(attachment.fileName)を取り除く")
     }
 
     private func removeAttachmentButton(_ attachment: ChatAttachment) -> some View {

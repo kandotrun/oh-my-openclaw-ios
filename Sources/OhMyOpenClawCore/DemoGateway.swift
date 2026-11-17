@@ -53,7 +53,7 @@ public actor DemoGateway: GatewayServing {
         case "sessions.subscribe": return .object(["subscribed": .bool(true), "list": list()])
         case "sessions.messages.subscribe": return .object(["subscribed": .bool(true)])
         case "sessions.messages.unsubscribe": return .object(["subscribed": .bool(false)])
-        case "agents.identity.get": return .object(["name": .string("Claw")])
+        case "agent.identity.get": return .object(["agentId": .string("demo"), "name": .string("デモエージェント"), "nameSource": .string("agent")])
         case "models.list": return .object(["models": .array([
             .object(["id": .string("demo/balanced"), "provider": .string("demo"), "name": .string("Balanced"), "thinkingLevels": .array([.object(["id": .string("off"), "label": .string("オフ")]), .object(["id": .string("medium"), "label": .string("標準")]), .object(["id": .string("high"), "label": .string("深く考える")])])]),
             .object(["id": .string("demo/fast"), "provider": .string("demo"), "name": .string("Fast"), "thinkingLevels": .array([])]),
