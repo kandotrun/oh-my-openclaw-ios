@@ -5,6 +5,7 @@ struct RootView: View {
     @Bindable var model: AppModel
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var drawerOpen = false
+    @State private var sidebarCollapsed = false
     @State private var showSettings = false
     @State private var showConnection = false
     @State private var search = ""
@@ -15,25 +16,26 @@ struct RootView: View {
 
     var body: some View {
         GeometryReader { geometry in
-            let drawerWidth = min(304.0, geometry.size.width * 0.78)
+            let layout = ChatLayout(width: geometry.size.width, sidebarAvailable: !model.sessions.isEmpty, drawerOpen: drawerOpen, sidebarCollapsed: sidebarCollapsed)
             ZStack(alignment: .leading) {
                 ChatTheme.canvas.ignoresSafeArea()
-                if !model.sessions.isEmpty && drawerOpen {
-                    drawer(width: drawerWidth)
-                        .opacity(drawerOpen ? 1 : 0)
-                        .accessibilityHidden(!drawerOpen)
+                if layout.sidebarVisible {
+                    drawer(width: layout.sidebarWidth)
                 }
                 Group {
                     if model.sessions.isEmpty { OnboardingView(model: model) }
                     else {
-                        ChatScreen(model: model, openMenu: { setDrawer(true) }, openSettings: { showSettings = true })
+                        ChatScreen(model: model, sidebarVisible: layout.isWide && layout.sidebarVisible, openMenu: {
+                            if layout.isWide { withAnimation(animation) { sidebarCollapsed.toggle() } }
+                            else { setDrawer(true) }
+                        }, openSettings: { showSettings = true })
                     }
                 }
-                .frame(width: geometry.size.width, height: geometry.size.height)
+                .frame(width: layout.chatWidth, height: geometry.size.height)
                 .background(ChatTheme.canvas)
-                .clipShape(RoundedRectangle(cornerRadius: drawerOpen && !reduceMotion ? 26 : 0))
+                .clipShape(RoundedRectangle(cornerRadius: layout.overlaysChat && !reduceMotion ? 26 : 0))
                 .overlay {
-                    if drawerOpen {
+                    if layout.overlaysChat {
                         Color.black.opacity(0.08)
                             .contentShape(Rectangle())
                             .onTapGesture { setDrawer(false) }
@@ -41,14 +43,16 @@ struct RootView: View {
                             .accessibilityAddTraits(.isButton)
                     }
                 }
-                .offset(x: drawerOpen ? drawerWidth : 0)
+                .offset(x: layout.chatOffset)
                 .simultaneousGesture(DragGesture(minimumDistance: 22).onEnded { value in
+                    guard !layout.isWide else { return }
                     guard abs(value.translation.width) > abs(value.translation.height) * 2 else { return }
                     if drawerOpen && value.translation.width < -65 { setDrawer(false) }
                     else if !drawerOpen && value.startLocation.x < 30 && value.translation.width > 65 && !model.sessions.isEmpty { setDrawer(true) }
                 })
             }
             .clipped()
+            .onChange(of: layout.isWide) { _, _ in drawerOpen = false }
         }
         .tint(ChatTheme.accent)
         .sheet(isPresented: $showSettings) {

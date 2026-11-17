@@ -12,6 +12,8 @@ The built-in demo uses synthetic conversations and never contacts a Gateway or A
 Requirements: Xcode 26 or newer with Swift 6, iOS 18 or newer, and [XcodeGen](https://github.com/yonaskolb/XcodeGen).
 Building the Liquid Glass controls requires the iOS 26 SDK or newer; the app still runs on iOS 18 with standard controls.
 The iOS CI job explicitly selects Xcode 26.3.
+For TestFlight builds with native iPhone Duo resizing, use Xcode 27.1 or newer.
+The sidebar tiles beside the chat when the current safe-area width has room for both columns; narrower windows retain the sliding drawer. The chat and composer keep their view identity across width changes.
 
 ```sh
 brew install xcodegen
