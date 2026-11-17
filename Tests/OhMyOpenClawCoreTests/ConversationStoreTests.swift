@@ -183,6 +183,33 @@ private func chat(_ state: String, run: String = "run", session: ChatSession = m
     #expect(store.pending[current.id]?.accepted == false)
 }
 
+@Test func settledRunKeepsItsPhysicalFenceAfterReceiptCleanupAndStoreReload() throws {
+    var store = fixtureStore()
+    store.setDraft(ComposerDraft(text: "stored input"), for: main.id)
+    let old = try store.prepareSubmission(for: main, policy: .null)
+    store.applyHistory(.object(["sessionId": .string(main.sessionID!), "messages": .array([
+        .object(["role": .string("user"), "content": .string("stored input"), "runId": .string(old.id), "__openclaw": .object(["id": .string(old.id + ":user")])]),
+    ])]), for: main)
+    #expect(store.pending[old.id] == nil)
+    let acceptedCurrentEvent = store.applyChatEvent(chat("delta", run: old.id, extra: ["deltaText": .string("current physical response")]))
+    #expect(acceptedCurrentEvent)
+    var restored = try JSONDecoder().decode(ConversationStore.self, from: JSONEncoder().encode(store))
+    var replacement = main; replacement.sessionID = "replacement"
+    restored.upsertSession(replacement)
+    restored.setDraft(ComposerDraft(text: "replacement input"), for: replacement.id)
+    let current = try restored.prepareSubmission(for: replacement, policy: .null)
+    let currentRows = restored.selectedMessages
+    for (index, state) in ["status", "delta", "final"].enumerated() {
+        let applied = restored.applyChatEvent(chat(state, run: old.id, seq: index + 2, extra: ["deltaText": .string("old response")]))
+        #expect(!applied)
+        #expect(restored.selectedMessages == currentRows)
+        #expect(restored.activeRunIDs[replacement.id] == current.id)
+        #expect(restored.activities[replacement.id] == .working)
+        #expect(restored.selectedDraft.text == "replacement input")
+    }
+    #expect(restored.pending[old.id] == nil)
+}
+
 @Test func settlingAnOldSubmissionCannotClearANewerActiveRun() throws {
     var store = fixtureStore()
     store.setDraft(ComposerDraft(text: "A"), for: main.id)

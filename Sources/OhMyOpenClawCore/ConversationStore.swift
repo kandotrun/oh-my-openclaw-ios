@@ -29,6 +29,7 @@ public struct ConversationStore: Codable, Sendable {
     public var activeRunIDs: [String: String] = [:]
     public var activities: [String: ActivityState] = [:]
     private var runSequences: [String: Int] = [:]
+    private var settledRunTargets: [String: ChatSession]?
 
     public init() {}
     public var selectedSession: ChatSession? { sessions.first { $0.id == selectedID } }
@@ -177,7 +178,7 @@ public struct ConversationStore: Codable, Sendable {
               let session = matchingSession(key: key, agentID: payload["agentId"].stringValue) else { return false }
         let state = payload["state"].stringValue ?? ""
         let terminal = ["final", "aborted", "error"].contains(state)
-        if let target = pending[runID]?.target, target.id != session.id || target.sessionID != session.sessionID {
+        if let target = pending[runID]?.target ?? settledRunTargets?[runID], target.id != session.id || target.sessionID != session.sessionID {
             // The old receipt may settle, but its stream cannot mutate the replacement conversation.
             if terminal { acknowledge(runID) }
             return false
@@ -241,7 +242,12 @@ public struct ConversationStore: Codable, Sendable {
             let stored = rows.contains { $0.sourceID == submission.id + ":user" || ($0.runID == submission.id && $0.role == .user) || $0.sourceID == receipt?["consumedByEventId"].stringValue }
             if stored || ["pending", "consumed"].contains(receipt?["state"].stringValue ?? "") {
                 acknowledge(submission.id)
-                if stored { pending[submission.id] = nil }
+                if stored {
+                    // Receipt cleanup must not discard the physical fence for buffered events.
+                    if settledRunTargets == nil { settledRunTargets = [:] }
+                    settledRunTargets?[submission.id] = submission.target
+                    pending[submission.id] = nil
+                }
             }
             if !stored { rows.append(pending[submission.id]?.message ?? submission.message) }
         }
