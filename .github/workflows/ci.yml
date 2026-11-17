@@ -19,8 +19,11 @@ jobs:
   ios:
     name: iOS simulator build
     runs-on: macos-15
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
     steps:
       - uses: actions/checkout@v4
+      - run: xcodebuild -version
       - run: brew install xcodegen
       - run: xcodegen generate
       - run: xcodebuild -project OhMyOpenClaw.xcodeproj -scheme OhMyOpenClaw -destination 'generic/platform=iOS Simulator' -derivedDataPath build CODE_SIGNING_ALLOWED=NO build

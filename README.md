@@ -9,7 +9,9 @@ The built-in demo uses synthetic conversations and never contacts a Gateway or A
 
 ## Build and run
 
-Requirements: Xcode 16 or newer with Swift 6, iOS 18 or newer, and [XcodeGen](https://github.com/yonaskolb/XcodeGen).
+Requirements: Xcode 26 or newer with Swift 6, iOS 18 or newer, and [XcodeGen](https://github.com/yonaskolb/XcodeGen).
+Building the Liquid Glass controls requires the iOS 26 SDK or newer; the app still runs on iOS 18 with standard controls.
+The iOS CI job explicitly selects Xcode 26.3.
 
 ```sh
 brew install xcodegen
