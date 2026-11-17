@@ -325,7 +325,10 @@ final class AppModel {
         let originalID = original.target.id
         sendingTargets.insert(originalID)
         var workingTargetID = originalID
-        defer { sendingTargets.remove(originalID); sendingTargets.remove(workingTargetID) }
+        defer {
+            sendingTargets.remove(originalID); sendingTargets.remove(workingTargetID)
+            if pendingHistoryRefresh.contains(originalID) || pendingHistoryRefresh.contains(workingTargetID) { scheduleQuietRefresh() }
+        }
         let generation = connectionGeneration
         var submission = original
         var target = submission.target
@@ -517,6 +520,10 @@ final class AppModel {
 
     func refreshHistory(for target: ChatSession) async throws {
         guard !target.key.hasPrefix("local:"), let service else { return }
+        guard !sendingTargets.contains(target.id) else {
+            pendingHistoryRefresh.insert(target.id)
+            return
+        }
         let generation = connectionGeneration
         let revision = streamRevisions[target.id, default: 0]
         let activeRunBeforeRequest = store.activeRunIDs[target.id]
