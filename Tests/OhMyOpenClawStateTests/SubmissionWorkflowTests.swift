@@ -106,13 +106,17 @@ private actor SubmissionGateway: GatewayServing {
     let main = ChatSession(key: "agent:a:main", agentID: "a", sessionID: "physical", title: "Main", isMain: true)
     let app = model(session: main, draft: ComposerDraft(text: "exactly once"), service: service)
     await app.send()
-    #expect(app.canSend)
+    #expect(app.draftText.isEmpty)
+    #expect(!app.canSend)
     #expect(app.messages.first?.delivery == .uncertain)
+    app.draftText = "exactly once"
+    #expect(app.canSend)
     await app.send()
     let sent = await service.sends
     #expect(sent.count == 2)
     #expect(sent[0] == sent[1])
     #expect(app.messages.filter { $0.role == .user }.count == 1)
+    #expect(app.draftText.isEmpty)
 }
 
 @Test @MainActor func ordinarySendUsesTheReplacementPhysicalSessionForAnUnchangedDraft() async throws {
@@ -125,6 +129,7 @@ private actor SubmissionGateway: GatewayServing {
     store.markUncertain(old.id)
     var replacement = original; replacement.sessionID = "replacement"
     store.upsertSession(replacement)
+    store.setDraft(ComposerDraft(text: "unchanged draft"), for: replacement.id)
     let app = AppModel(service: service, initialStore: store)
     await app.send()
     let sent = try #require(await service.sends.first)

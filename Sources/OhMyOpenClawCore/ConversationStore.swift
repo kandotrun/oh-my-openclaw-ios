@@ -12,8 +12,10 @@ public struct PendingSubmission: Codable, Sendable, Equatable, Identifiable {
     public var params: JSONValue
     public var message: ChatMessage
     public var accepted: Bool
-    public init(id: String, target: ChatSession, params: JSONValue, message: ChatMessage, accepted: Bool = false) {
+    public var draftRevisionAfterReservation: Int?
+    public init(id: String, target: ChatSession, params: JSONValue, message: ChatMessage, accepted: Bool = false, draftRevisionAfterReservation: Int? = nil) {
         self.id = id; self.target = target; self.params = params; self.message = message; self.accepted = accepted
+        self.draftRevisionAfterReservation = draftRevisionAfterReservation
     }
 }
 
@@ -30,13 +32,19 @@ public struct ConversationStore: Codable, Sendable {
     public var activities: [String: ActivityState] = [:]
     private var runSequences: [String: Int] = [:]
     private var settledRunTargets: [String: ChatSession]?
+    private var draftRevisions: [String: Int]?
 
     public init() {}
     public var selectedSession: ChatSession? { sessions.first { $0.id == selectedID } }
     public var selectedMessages: [ChatMessage] { selectedID.flatMap { transcripts[$0] } ?? [] }
     public var selectedDraft: ComposerDraft { selectedID.flatMap { drafts[$0] } ?? ComposerDraft() }
 
-    public mutating func setDraft(_ draft: ComposerDraft, for id: String) { drafts[id] = draft }
+    public mutating func setDraft(_ draft: ComposerDraft, for id: String) {
+        drafts[id] = draft
+        if draftRevisions == nil { draftRevisions = [:] }
+        let revision = (draftRevisions?[id] ?? 0) + 1
+        draftRevisions?[id] = revision
+    }
 
     public mutating func upsertSession(_ session: ChatSession) {
         if let index = sessions.firstIndex(where: { $0.id == session.id }) {
@@ -56,12 +64,14 @@ public struct ConversationStore: Codable, Sendable {
 
     public mutating func replaceLocalSession(_ old: ChatSession, with new: ChatSession) {
         let draft = drafts.removeValue(forKey: old.id)
+        let revision = draftRevisions?.removeValue(forKey: old.id)
         let transcript = transcripts.removeValue(forKey: old.id)
         sessions.removeAll { $0.id == old.id }
         creationRequests[old.id] = nil
         creationIssuedAt?[old.id] = nil
         upsertSession(new)
         if let draft { drafts[new.id] = draft }
+        if let revision { draftRevisions?[new.id] = revision }
         if let transcript { transcripts[new.id] = transcript }
         if selectedID == old.id { selectedID = new.id }
     }
@@ -90,8 +100,10 @@ public struct ConversationStore: Codable, Sendable {
         if frameSize > (policy["maxPayload"].intValue ?? 25 * 1024 * 1024) {
             throw GatewayFailure(code: "PAYLOAD_TOO_LARGE", message: "添付ファイルの合計サイズが大きすぎます。ファイルを減らして送信してください。")
         }
-        let message = ChatMessage(id: runID + ":user", role: .user, text: draft.text, attachments: draft.attachments, delivery: .pending, runID: runID)
-        let submission = PendingSubmission(id: runID, target: session, params: body, message: message)
+        let message = ChatMessage(id: runID + ":user", role: .user, text: draft.text, attachments: draft.attachments, delivery: .pending, runID: runID, idempotencyKey: runID)
+        // The durable outbox owns these bytes now; the composer is the next input.
+        setDraft(ComposerDraft(), for: session.id)
+        let submission = PendingSubmission(id: runID, target: session, params: body, message: message, draftRevisionAfterReservation: draftRevisions?[session.id])
         pending[runID] = submission
         transcripts[session.id, default: []].append(message)
         activeRunIDs[session.id] = runID
@@ -137,9 +149,9 @@ public struct ConversationStore: Codable, Sendable {
         if let index = transcripts[submission.target.id]?.firstIndex(where: { $0.id == runID + ":user" }) {
             transcripts[submission.target.id]?[index].delivery = .accepted
         }
-        // Clear only the exact submitted draft. A user may have typed a new draft while awaiting ACK.
-        let original = ComposerDraft(text: submission.message.text, attachments: submission.message.attachments)
-        if drafts[submission.target.id] == original { drafts[submission.target.id] = ComposerDraft() }
+        // Old snapshots retained the submitted draft until ACK. New reservations already
+        // cleared it, so even an identically retyped next input must remain untouched.
+        if ownsLegacyDraft(submission) { setDraft(ComposerDraft(), for: submission.target.id) }
     }
 
     public mutating func markUncertain(_ runID: String) {
@@ -155,8 +167,29 @@ public struct ConversationStore: Codable, Sendable {
     }
 
     public mutating func reject(_ runID: String) {
-        guard let submission = pending.removeValue(forKey: runID) else { return }
-        transcripts[submission.target.id]?.removeAll { $0.id == runID + ":user" }
+        guard var submission = pending[runID] else { return }
+        let target = submission.target
+        let original = ComposerDraft(text: submission.message.text, attachments: submission.message.attachments)
+        let canRestore = submission.draftRevisionAfterReservation != nil &&
+            draftRevisions?[target.id] == submission.draftRevisionAfterReservation &&
+            (drafts[target.id] ?? ComposerDraft()) == ComposerDraft() &&
+            sessions.first(where: { $0.id == target.id })?.sessionID == target.sessionID
+        if canRestore {
+            setDraft(original, for: target.id)
+            pending[runID] = nil
+            transcripts[target.id]?.removeAll { $0.id == runID + ":user" }
+        } else if ownsLegacyDraft(submission) {
+            // Legacy submissions still have their bytes in the composer.
+            pending[runID] = nil
+            transcripts[target.id]?.removeAll { $0.id == runID + ":user" }
+        } else {
+            // A newer draft owns the composer. Keep the failed input available to retry.
+            submission.accepted = false; submission.message.delivery = .failed
+            pending[runID] = submission
+            if let index = transcripts[target.id]?.firstIndex(where: { $0.id == runID + ":user" }) {
+                transcripts[target.id]?[index].delivery = .failed
+            }
+        }
         if activeRunIDs[submission.target.id] == runID {
             activities[submission.target.id] = .idle
             activeRunIDs[submission.target.id] = nil
@@ -170,6 +203,29 @@ public struct ConversationStore: Codable, Sendable {
             throw GatewayFailure(code: "SESSION_CHANGED", message: "会話の保存先が変わったため再送できません。元のメッセージを確認してください。")
         }
         return submission
+    }
+
+    public mutating func prepareRetry(_ id: String, consumingDraft: Bool = false) throws -> PendingSubmission {
+        var submission = try retrySubmission(id)
+        let original = ComposerDraft(text: submission.message.text, attachments: submission.message.attachments)
+        if (consumingDraft && drafts[submission.target.id] == original) || ownsLegacyDraft(submission) {
+            setDraft(ComposerDraft(), for: submission.target.id)
+            submission.draftRevisionAfterReservation = draftRevisions?[submission.target.id]
+        }
+        submission.message.delivery = .pending
+        pending[submission.id] = submission
+        if let index = transcripts[submission.target.id]?.firstIndex(where: { $0.id == submission.message.id }) {
+            transcripts[submission.target.id]?[index].delivery = .pending
+        }
+        return submission
+    }
+
+    private func ownsLegacyDraft(_ submission: PendingSubmission) -> Bool {
+        let target = submission.target
+        return submission.draftRevisionAfterReservation == nil &&
+            draftRevisions?[target.id] == nil &&
+            sessions.first(where: { $0.id == target.id })?.sessionID == target.sessionID &&
+            drafts[target.id] == ComposerDraft(text: submission.message.text, attachments: submission.message.attachments)
     }
 
     /// Applies authoritative chat events once; agent text events must never enter this reducer.
@@ -196,11 +252,21 @@ public struct ConversationStore: Codable, Sendable {
         var rows = transcripts[session.id] ?? []
         let index = rows.firstIndex { $0.id == messageID }
         var row = index.map { rows[$0] } ?? ChatMessage(id: messageID, role: .assistant, text: "", delivery: .pending, runID: runID)
+        var internalSnapshot = false
         if payload.objectValue?["message"] != nil, payload["message"] != .null {
             let snapshot = Self.parseMessage(payload["message"], fallbackID: messageID)
-            row.text = snapshot.text
-            row.attachments = snapshot.attachments
-            row.sourceID = snapshot.sourceID
+            if snapshot.role == .assistant {
+                row.text = snapshot.text
+                row.attachments = snapshot.attachments
+                row.sourceID = snapshot.sourceID
+            } else {
+                internalSnapshot = true
+                if snapshot.isToolMessage == true, !snapshot.attachments.isEmpty {
+                    for attachment in snapshot.attachments where !row.attachments.contains(where: { $0.id == attachment.id }) {
+                        row.attachments.append(attachment)
+                    }
+                }
+            }
         } else if state == "delta" {
             let delta = payload["deltaText"].stringValue ?? ""
             if payload["replace"].boolValue == true { row.text = delta } else { row.text += delta }
@@ -212,7 +278,7 @@ public struct ConversationStore: Codable, Sendable {
             if pending[runID] != nil { acknowledge(runID) }
             if let userIndex = rows.firstIndex(where: { $0.id == runID + ":user" }) { rows[userIndex].delivery = .accepted }
         } else {
-            activeRunIDs[session.id] = runID; activities[session.id] = .responding
+            activeRunIDs[session.id] = runID; activities[session.id] = internalSnapshot ? .working : .responding
         }
         if index != nil { rows[index!] = row }
         else if !row.text.isEmpty || !row.attachments.isEmpty { rows.append(row) }
@@ -225,6 +291,7 @@ public struct ConversationStore: Codable, Sendable {
         if let serverID = payload["sessionId"].stringValue, let physical = target.sessionID, serverID != physical { return 0 }
         let previous = transcripts[target.id] ?? []
         var rows = Self.parseMessages(payload["messages"].arrayValue ?? [], fallbackPrefix: "history")
+        let receipts = payload["inputReceipts"].arrayValue ?? []
         var olderRows: [ChatMessage] = []
         if preservingOlderHistory, payload["hasMore"].boolValue == true, let firstID = rows.first?.id,
            let boundary = previous.firstIndex(where: { $0.id == firstID }) {
@@ -233,10 +300,26 @@ public struct ConversationStore: Codable, Sendable {
         for item in payload["pendingInputs"]["items"].arrayValue ?? [] where item["message"] != .null {
             var row = Self.parseMessage(item["message"], fallbackID: item["id"].stringValue ?? UUID().uuidString)
             row.runID = item["runId"].stringValue
+            // The pending projection intentionally strips message metadata; the outer
+            // run ID identifies input custody, independently of its eventual execution.
+            row.idempotencyKey = row.idempotencyKey ?? item["runId"].stringValue
             row.delivery = item["state"].stringValue == "cancelled" ? .failed : .accepted
-            if !rows.contains(where: { $0.id == row.id }) { rows.append(row) }
+            if row.delivery == .failed, let runID = row.runID, let submission = pending[runID],
+               submission.target.id == target.id, submission.target.sessionID == target.sessionID {
+                // The failed projection's Retry button addresses the durable local input.
+                row.id = submission.message.id
+            }
+            let consumedEventID = row.runID.flatMap { runID in
+                receipts.first { $0["runId"].stringValue == runID }?["consumedByEventId"].stringValue
+            }
+            let alreadyProjected = (olderRows + rows).contains { existing in
+                guard existing.role == row.role else { return false }
+                if let source = row.sourceID, existing.sourceID == source { return true }
+                guard row.role == .user, let key = row.idempotencyKey else { return false }
+                return Self.matchesSubmission(existing, runID: key, consumedEventID: consumedEventID)
+            }
+            if !alreadyProjected { rows.append(row) }
         }
-        let receipts = payload["inputReceipts"].arrayValue ?? []
         var submissionOrder: [String: Int] = [:]
         for (index, row) in previous.enumerated() where row.role == .user {
             if let runID = row.runID, submissionOrder[runID] == nil { submissionOrder[runID] = index }
@@ -248,20 +331,33 @@ public struct ConversationStore: Codable, Sendable {
         for submission in unresolved {
             let receipt = receipts.first { $0["runId"].stringValue == submission.id }
             let consumedEventID = receipt?["consumedByEventId"].stringValue
-            let stored = rows.contains { $0.sourceID == submission.id + ":user" || ($0.runID == submission.id && $0.role == .user) || (consumedEventID != nil && $0.sourceID == consumedEventID) }
-            if stored || ["pending", "consumed"].contains(receipt?["state"].stringValue ?? "") {
+            let matchingRows = (olderRows + rows).filter { Self.matchesSubmission($0, runID: submission.id, consumedEventID: consumedEventID) }
+            let storedRows = matchingRows.filter { $0.delivery != .failed }
+            let stored = !storedRows.isEmpty
+            let cancelled = receipt?["state"].stringValue == "cancelled" || matchingRows.contains { $0.delivery == .failed }
+            if cancelled && !stored {
+                pending[submission.id]?.accepted = false
+                pending[submission.id]?.message.delivery = .failed
+            } else if stored || ["pending", "consumed"].contains(receipt?["state"].stringValue ?? "") {
                 acknowledge(submission.id)
                 if stored {
                     // Receipt cleanup must not discard the physical fence for buffered events.
                     if settledRunTargets == nil { settledRunTargets = [:] }
                     settledRunTargets?[submission.id] = submission.target
+                    for row in storedRows {
+                        if let runID = row.runID { settledRunTargets?[runID] = submission.target }
+                    }
                     pending[submission.id] = nil
                 }
             }
-            if !stored { rows.append(pending[submission.id]?.message ?? submission.message) }
+            if matchingRows.isEmpty { rows.append(pending[submission.id]?.message ?? submission.message) }
         }
         let inflight = payload["inFlightRun"]
         if let runID = inflight["runId"].stringValue {
+            // Execution ownership may differ from the submitted idempotency key.
+            // Preserve its physical target after the input receipt is reconciled.
+            if settledRunTargets == nil { settledRunTargets = [:] }
+            settledRunTargets?[runID] = target
             activeRunIDs[target.id] = runID
             let text = inflight["text"].stringValue ?? ""
             activities[target.id] = text.isEmpty ? .working : .responding
@@ -273,23 +369,25 @@ public struct ConversationStore: Codable, Sendable {
         return olderRows.count
     }
 
+    private static func matchesSubmission(_ row: ChatMessage, runID: String, consumedEventID: String? = nil) -> Bool {
+        guard row.role == .user else { return false }
+        if let consumedEventID, row.sourceID == consumedEventID { return true }
+        if let key = row.idempotencyKey { return key == runID || key == runID + ":user" }
+        return row.sourceID == runID + ":user"
+    }
+
     public func matchingSession(key: String, agentID: String?) -> ChatSession? {
         let matches = sessions.filter { $0.key == key && (agentID == nil || $0.agentID == agentID) }
         return matches.count == 1 ? matches.first : nil
     }
 
     public static func parseMessage(_ value: JSONValue, fallbackID: String) -> ChatMessage {
-        let role = ChatMessage.Role(rawValue: value["role"].stringValue ?? "assistant") ?? .system
-        var text = value["text"].stringValue ?? value["content"].stringValue ?? ""
-        var attachments: [ChatAttachment] = []
-        for block in value["content"].arrayValue ?? [] {
-            if block["type"].stringValue == "text", let part = block["text"].stringValue { text += part }
-            else if let attachment = ChatAttachment.parse(block: block, fallbackID: fallbackID + ":attachment:\(attachments.count)") { attachments.append(attachment) }
-        }
+        let content = ChatMessageContent.project(value, fallbackID: fallbackID)
         let metadata = value["__openclaw"]
         let id = metadata["id"].stringValue ?? value["id"].stringValue ?? fallbackID
         let runID = metadata["runId"].stringValue ?? value["runId"].stringValue
-        return ChatMessage(id: id, role: role, text: text, attachments: attachments, runID: runID, sourceID: id)
+        let idempotencyKey = metadata["idempotencyKey"].stringValue ?? value["idempotencyKey"].stringValue
+        return ChatMessage(id: id, role: content.role, text: content.text, attachments: content.attachments, runID: runID, sourceID: id, idempotencyKey: idempotencyKey, isToolMessage: content.isToolMessage ? true : nil)
     }
 
     /// A durable record may project to several rows. Keep record identity apart from display identity.

@@ -60,7 +60,7 @@ final class AppModel {
     var composerContextID: String {
         [isDemo ? "local-demo" : endpoint?.absoluteString ?? "unconfigured", selectedSession?.agentID ?? "", selectedSession?.key ?? "", selectedSession?.sessionID ?? "", connectionGeneration.uuidString, selectionGeneration.uuidString].joined(separator: "|")
     }
-    var messages: [ChatMessage] { store.selectedMessages }
+    var messages: [ChatMessage] { store.selectedMessages.filter(\.isConversationMessage) }
     var draftText: String {
         get { store.selectedDraft.text }
         set {
@@ -311,7 +311,7 @@ final class AppModel {
     func send() async {
         guard canSend, let target = selectedSession else { return }
         if let existing = store.unresolvedSubmission(matching: store.selectedDraft, for: target) {
-            await retryPending(existing.id)
+            await retryPending(existing.id, consumingDraft: true)
             return
         }
         errorMessage = nil
@@ -382,21 +382,25 @@ final class AppModel {
             await dispatch(submission, through: service, generation: generation)
         } catch {
             if connectionGeneration == generation, !cancelledPreparedRuns.contains(original.id) {
-                store.markUncertain(submission.id)
+                // A fresh input has not been dispatched, but an earlier retry may
+                // already exist remotely and must keep its idempotency identity.
+                if isRetry { store.markUncertain(submission.id) }
+                else { store.reject(submission.id) }
                 errorMessage = error.localizedDescription
                 scheduleSave()
             }
         }
     }
 
-    func retryPending(_ messageID: String) async {
+    func retryPending(_ messageID: String, consumingDraft: Bool = false) async {
         guard service != nil, connectionState == .connected else { return }
         do {
-            let submission = try store.retrySubmission(messageID)
+            var submission = try store.retrySubmission(messageID)
             guard !sendingTargets.contains(submission.target.id) else { return }
             guard (store.activities[submission.target.id] ?? .idle) == .idle, store.activeRunIDs[submission.target.id] == nil else {
                 throw GatewayFailure(code: "RUN_IN_PROGRESS", message: "現在の応答が終わってから、前のメッセージを再試行してください。")
             }
+            submission = try store.prepareRetry(submission.id, consumingDraft: consumingDraft)
             store.activeRunIDs[submission.target.id] = submission.id; store.activities[submission.target.id] = .working
             await sendPrepared(submission, isRetry: true)
         } catch { errorMessage = error.localizedDescription }

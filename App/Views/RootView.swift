@@ -15,44 +15,47 @@ struct RootView: View {
     private var animation: Animation? { reduceMotion ? nil : .spring(response: 0.36, dampingFraction: 0.88) }
 
     var body: some View {
-        GeometryReader { geometry in
-            let layout = ChatLayout(width: geometry.size.width, sidebarAvailable: !model.sessions.isEmpty, drawerOpen: drawerOpen, sidebarCollapsed: sidebarCollapsed)
-            ZStack(alignment: .leading) {
-                ChatTheme.canvas.ignoresSafeArea()
-                if layout.sidebarVisible {
-                    drawer(width: layout.sidebarWidth)
-                }
-                Group {
-                    if model.sessions.isEmpty { OnboardingView(model: model) }
-                    else {
-                        ChatScreen(model: model, sidebarVisible: layout.isWide && layout.sidebarVisible, openMenu: {
-                            if layout.isWide { withAnimation(animation) { sidebarCollapsed.toggle() } }
-                            else { setDrawer(true) }
-                        }, openSettings: { showSettings = true })
+        NavigationStack {
+            GeometryReader { geometry in
+                let layout = ChatLayout(width: geometry.size.width, sidebarAvailable: !model.sessions.isEmpty, drawerOpen: drawerOpen, sidebarCollapsed: sidebarCollapsed)
+                ZStack(alignment: .leading) {
+                    ChatTheme.canvas.ignoresSafeArea()
+                    if layout.sidebarVisible {
+                        drawer(width: layout.sidebarWidth)
                     }
-                }
-                .frame(width: layout.chatWidth, height: geometry.size.height)
-                .background(ChatTheme.canvas)
-                .clipShape(RoundedRectangle(cornerRadius: layout.overlaysChat && !reduceMotion ? 26 : 0))
-                .overlay {
-                    if layout.overlaysChat {
-                        Color.black.opacity(0.08)
-                            .contentShape(Rectangle())
-                            .onTapGesture { setDrawer(false) }
-                            .accessibilityLabel("サイドバーを閉じる")
-                            .accessibilityAddTraits(.isButton)
+                    Group {
+                        if model.sessions.isEmpty { OnboardingView(model: model) }
+                        else {
+                            ChatScreen(model: model, sidebarVisible: layout.sidebarVisible, openMenu: {
+                                if layout.isWide { withAnimation(animation) { sidebarCollapsed.toggle() } }
+                                else { setDrawer(!drawerOpen) }
+                            }, openSettings: { showSettings = true })
+                        }
                     }
+                    .frame(width: layout.chatWidth, height: geometry.size.height)
+                    .background(ChatTheme.canvas)
+                    .clipShape(RoundedRectangle(cornerRadius: layout.overlaysChat && !reduceMotion ? 26 : 0))
+                    .overlay {
+                        if layout.overlaysChat {
+                            Color.black.opacity(0.08)
+                                .contentShape(Rectangle())
+                                .onTapGesture { setDrawer(false) }
+                                .accessibilityLabel("サイドバーを閉じる")
+                                .accessibilityAddTraits(.isButton)
+                        }
+                    }
+                    .offset(x: layout.chatOffset)
+                    .simultaneousGesture(DragGesture(minimumDistance: 22).onEnded { value in
+                        guard !layout.isWide else { return }
+                        guard abs(value.translation.width) > abs(value.translation.height) * 2 else { return }
+                        if drawerOpen && value.translation.width < -65 { setDrawer(false) }
+                        else if !drawerOpen && value.startLocation.x < 30 && value.translation.width > 65 && !model.sessions.isEmpty { setDrawer(true) }
+                    })
                 }
-                .offset(x: layout.chatOffset)
-                .simultaneousGesture(DragGesture(minimumDistance: 22).onEnded { value in
-                    guard !layout.isWide else { return }
-                    guard abs(value.translation.width) > abs(value.translation.height) * 2 else { return }
-                    if drawerOpen && value.translation.width < -65 { setDrawer(false) }
-                    else if !drawerOpen && value.startLocation.x < 30 && value.translation.width > 65 && !model.sessions.isEmpty { setDrawer(true) }
-                })
+                .clipped()
+                .onChange(of: layout.isWide) { _, _ in drawerOpen = false }
             }
-            .clipped()
-            .onChange(of: layout.isWide) { _, _ in drawerOpen = false }
+            .toolbar(model.sessions.isEmpty ? .hidden : .visible, for: .navigationBar)
         }
         .tint(ChatTheme.accent)
         .sheet(isPresented: $showSettings) {

@@ -18,12 +18,14 @@ struct ChatScreen: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            header
+            if model.activity != .idle || model.isDemo { statusHeader }
             connectionNotice
             ScrollViewReader { proxy in
                 ZStack(alignment: .bottom) {
                     ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 20) {
+                        // History is paged. Measure the loaded rows so long messages
+                        // cannot leave bottom anchoring dependent on lazy estimates.
+                        VStack(alignment: .leading, spacing: 20) {
                             if model.hasMoreHistory {
                                 Button {
                                     let anchor = model.messages.first?.id
@@ -35,6 +37,7 @@ struct ChatScreen: View {
                                         loadingOlder = false
                                         guard model.composerContextID == contextID, let anchor else { return }
                                         await Task.yield()
+                                        guard model.composerContextID == contextID else { return }
                                         proxy.scrollTo(anchor, anchor: .top)
                                     }
                                 } label: {
@@ -73,7 +76,8 @@ struct ChatScreen: View {
                         .frame(maxWidth: .infinity)
                     }
                     .scrollDismissesKeyboard(.interactively)
-                    .defaultScrollAnchor(followsBottom ? .bottom : nil, for: .sizeChanges)
+                    // Native anchoring owns content, keyboard, and window size changes.
+                    .defaultScrollAnchor(followsBottom && !userScrolling ? .bottom : nil, for: .sizeChanges)
                     .onScrollGeometryChange(for: Bool.self) { geometry in
                         geometry.contentSize.height - geometry.contentOffset.y - geometry.containerSize.height < 90
                     } action: { _, value in
@@ -82,16 +86,14 @@ struct ChatScreen: View {
                     }
                     .onScrollPhaseChange { _, phase in
                         if phase == .idle && userScrolling { followsBottom = nearBottom }
-                        userScrolling = phase == .interacting || phase == .decelerating
+                        userScrolling = phase == .tracking || phase == .interacting || phase == .decelerating
                     }
                     .task(id: model.selectedSessionKey) {
                         followsBottom = true
                         await Task.yield()
+                        guard !Task.isCancelled, followsBottom, !userScrolling else { return }
                         proxy.scrollTo("conversationBottom", anchor: .bottom)
                     }
-                    .onChange(of: model.messages.last?.text) { _, _ in scrollIfFollowing(proxy) }
-                    .onChange(of: model.messages.count) { _, _ in scrollIfFollowing(proxy) }
-                    .onChange(of: model.prompts.count) { _, _ in scrollIfFollowing(proxy) }
 
                     if !followsBottom {
                         Button {
@@ -118,27 +120,25 @@ struct ChatScreen: View {
                 .frame(maxWidth: .infinity)
         }
         .background(ChatTheme.canvas)
-    }
-
-    private var header: some View {
-        ChatGlassGroup {
-            HStack(alignment: .center) {
-                QuietIconButton(symbol: sidebarVisible ? "sidebar.left" : "line.3.horizontal", label: sidebarVisible ? "会話一覧を隠す" : "会話を開く", action: openMenu)
+        .navigationTitle("")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbarBackground(.hidden, for: .navigationBar)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button(sidebarVisible ? "会話一覧を隠す" : "会話を開く", systemImage: sidebarVisible ? "sidebar.left" : "line.3.horizontal", action: openMenu)
                     .accessibilityIdentifier("menuButton")
-                Spacer(minLength: 4)
-                VStack(spacing: 5) {
-                    Text(model.agentName).font(.headline)
-                    ActivityPill(activity: model.activity, agentName: model.agentName)
-                }
-                .frame(maxWidth: .infinity)
-                Spacer(minLength: 4)
-                QuietIconButton(symbol: "ellipsis", label: "設定を開く", action: openSettings)
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("設定を開く", systemImage: "ellipsis", action: openSettings)
             }
         }
-        .padding(.horizontal, 18)
-        .padding(.top, 8)
-        .padding(.bottom, 12)
-        .overlay(alignment: .bottom) {
+    }
+
+    private var statusHeader: some View {
+        VStack(spacing: 6) {
+            if model.activity != .idle {
+                ActivityPill(activity: model.activity, agentName: model.agentName)
+            }
             if model.isDemo {
                 Text("デモ")
                     .font(.system(size: 10, weight: .medium))
@@ -146,9 +146,11 @@ struct ChatScreen: View {
                     .padding(.horizontal, 7)
                     .padding(.vertical, 2)
                     .background(ChatTheme.secondaryCanvas, in: Capsule())
-                    .offset(y: 5)
             }
         }
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 18)
+        .padding(.vertical, 8)
     }
 
     @ViewBuilder
@@ -194,15 +196,6 @@ struct ChatScreen: View {
         .padding(.top, 72)
         .padding(.bottom, 42)
         .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func scrollIfFollowing(_ proxy: ScrollViewProxy) {
-        guard followsBottom else { return }
-        Task { @MainActor in
-            await Task.yield()
-            guard followsBottom else { return }
-            proxy.scrollTo("conversationBottom", anchor: .bottom)
-        }
     }
 }
 

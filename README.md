@@ -93,4 +93,4 @@ When the app returns to the foreground it reconnects and reloads the selected co
 The transport is app-owned because the official Swift package is nested in the OpenClaw monorepo and depends on its Node-based protocol generation; it cannot be added as a standalone URL dependency unchanged.
 
 Adapted OpenClaw authentication code retains its upstream MIT notice in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
-The app icon is original geometric artwork, reproducible with `swift scripts/generate-icon.swift`.
+The app icon source is [App/AppIcon.icon](App/AppIcon.icon), an Icon Composer document with a shared transparent claw mask, separate coral and milky glass layers, and native material effects. Xcode compiles its appearance variants and legacy icons for iOS 18. Use XcodeGen 2.45.1 or later, and run `swift scripts/generate-icon.swift` to export native previews to `build/icon-previews`; Xcode 27 also exports both design generations 26 and 27. Edit the layered document in Icon Composer rather than replacing it with a flattened PNG.
