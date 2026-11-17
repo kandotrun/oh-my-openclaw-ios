@@ -34,13 +34,23 @@ enum DictationCallbacks {
     nonisolated static func recognition(
         onUpdate: @escaping @MainActor @Sendable (DictationUpdate) -> Void
     ) -> (SFSpeechRecognitionResult?, (any Error)?) -> Void {
-        { result, error in
+        let deliver = recognitionUpdates(onUpdate: onUpdate)
+        return { result, error in
             let update = DictationUpdate(
                 text: result?.bestTranscription.formattedString,
                 isFinal: result?.isFinal == true,
                 failed: error != nil
             )
-            Task { @MainActor in onUpdate(update) }
+            deliver(update)
+        }
+    }
+
+    nonisolated static func recognitionUpdates(
+        onUpdate: @escaping @MainActor @Sendable (DictationUpdate) -> Void
+    ) -> @Sendable (DictationUpdate) -> Void {
+        { update in
+            // Keep partial/final callback order when crossing from the SDK queue.
+            DispatchQueue.main.async { onUpdate(update) }
         }
     }
 }

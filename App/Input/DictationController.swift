@@ -28,7 +28,9 @@ final class DictationController {
         }
         guard generation == session else { return }
         guard microphoneAllowed else { errorMessage = "音声入力を使うには、設定でマイクを許可してください。"; return }
-        guard let recognizer = SFSpeechRecognizer(locale: .current), recognizer.isAvailable, recognizer.supportsOnDeviceRecognition else {
+        guard let recognizer = SFSpeechRecognizer(locale: DictationLanguage.recognitionLocale),
+              DictationLanguage.acceptsRecognizerLocale(recognizer.locale),
+              recognizer.isAvailable, recognizer.supportsOnDeviceRecognition else {
             errorMessage = "この端末または言語ではオンデバイス音声入力を利用できません。キーボードで入力してください。"
             return
         }

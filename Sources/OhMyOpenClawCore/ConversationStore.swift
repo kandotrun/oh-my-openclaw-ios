@@ -293,6 +293,11 @@ public struct ConversationStore: Codable, Sendable {
             // run ID identifies input custody, independently of its eventual execution.
             row.idempotencyKey = row.idempotencyKey ?? item["runId"].stringValue
             row.delivery = item["state"].stringValue == "cancelled" ? .failed : .accepted
+            if row.delivery == .failed, let runID = row.runID, let submission = pending[runID],
+               submission.target.id == target.id, submission.target.sessionID == target.sessionID {
+                // The failed projection's Retry button addresses the durable local input.
+                row.id = submission.message.id
+            }
             let alreadyProjected = (olderRows + rows).contains { existing in
                 guard existing.role == row.role else { return false }
                 if let source = row.sourceID, existing.sourceID == source { return true }
@@ -313,17 +318,26 @@ public struct ConversationStore: Codable, Sendable {
         for submission in unresolved {
             let receipt = receipts.first { $0["runId"].stringValue == submission.id }
             let consumedEventID = receipt?["consumedByEventId"].stringValue
-            let stored = (olderRows + rows).contains { Self.matchesSubmission($0, runID: submission.id, consumedEventID: consumedEventID) }
-            if stored || ["pending", "consumed"].contains(receipt?["state"].stringValue ?? "") {
+            let matchingRows = (olderRows + rows).filter { Self.matchesSubmission($0, runID: submission.id, consumedEventID: consumedEventID) }
+            let storedRows = matchingRows.filter { $0.delivery != .failed }
+            let stored = !storedRows.isEmpty
+            let cancelled = receipt?["state"].stringValue == "cancelled" || matchingRows.contains { $0.delivery == .failed }
+            if cancelled && !stored {
+                pending[submission.id]?.accepted = false
+                pending[submission.id]?.message.delivery = .failed
+            } else if stored || ["pending", "consumed"].contains(receipt?["state"].stringValue ?? "") {
                 acknowledge(submission.id)
                 if stored {
                     // Receipt cleanup must not discard the physical fence for buffered events.
                     if settledRunTargets == nil { settledRunTargets = [:] }
                     settledRunTargets?[submission.id] = submission.target
+                    for row in storedRows {
+                        if let runID = row.runID { settledRunTargets?[runID] = submission.target }
+                    }
                     pending[submission.id] = nil
                 }
             }
-            if !stored { rows.append(pending[submission.id]?.message ?? submission.message) }
+            if matchingRows.isEmpty { rows.append(pending[submission.id]?.message ?? submission.message) }
         }
         let inflight = payload["inFlightRun"]
         if let runID = inflight["runId"].stringValue {

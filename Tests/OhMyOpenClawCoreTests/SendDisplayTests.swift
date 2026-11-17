@@ -94,6 +94,58 @@ private func userProjection(eventID: String, key: String, runID: String? = nil) 
     #expect(store.selectedMessages.first?.sourceID == "pending:custody-input")
 }
 
+@Test func completedExecutionRemainsFencedAfterItsInputIsReconciledAndPersisted() throws {
+    var store = displayStore()
+    let sent = try store.prepareSubmission(for: displaySession, policy: .null)
+    store.applyHistory(.object([
+        "sessionId": .string("physical"),
+        "messages": .array([userProjection(eventID: "canonical-user", key: sent.id, runID: "completed-execution")]),
+    ]), for: displaySession)
+    #expect(store.pending[sent.id] == nil)
+    store = try JSONDecoder().decode(ConversationStore.self, from: JSONEncoder().encode(store))
+    var replacement = displaySession; replacement.sessionID = "replacement"
+    store.upsertSession(replacement)
+    for state in ["status", "delta", "final"] {
+        let applied = store.applyChatEvent(.object([
+            "sessionKey": .string(replacement.key), "agentId": .string(replacement.agentID),
+            "runId": .string("completed-execution"), "state": .string(state), "deltaText": .string("old response"),
+        ]))
+        #expect(!applied)
+        #expect(store.selectedMessages.isEmpty)
+        #expect(store.activeRunIDs[replacement.id] == nil)
+    }
+}
+
+@Test func cancelledCustodyKeepsOneFailedBubbleWithItsOriginalRetryAndNewerDraft() throws {
+    for includesProjection in [true, false] {
+        var store = displayStore()
+        let sent = try store.prepareSubmission(for: displaySession, policy: .null)
+        store.setDraft(ComposerDraft(text: "next input"), for: displaySession.id)
+        let item: JSONValue = .object([
+            "id": .string("cancelled-custody"), "runId": .string(sent.id), "state": .string("cancelled"),
+            "message": .object(["role": .string("user"), "content": .string("same input"), "__openclaw": .object(["id": .string("pending:cancelled-custody")])]),
+        ])
+        let history: JSONValue = .object([
+            "sessionId": .string("physical"), "messages": .array([]),
+            "pendingInputs": .object(["items": .array(includesProjection ? [item] : [])]),
+            "inputReceipts": .array([.object(["runId": .string(sent.id), "state": .string("cancelled")])]),
+        ])
+        store.applyHistory(history, for: displaySession)
+        store.applyHistory(history, for: displaySession)
+        store = try JSONDecoder().decode(ConversationStore.self, from: JSONEncoder().encode(store))
+        #expect(store.pending[sent.id]?.accepted == false)
+        #expect(store.pending[sent.id]?.message.delivery == .failed)
+        #expect(store.selectedMessages.count == 1)
+        let row = try #require(store.selectedMessages.first)
+        #expect(row.id == sent.message.id)
+        #expect(row.delivery == .failed)
+        let retry = try store.prepareRetry(row.id)
+        #expect(retry.params == sent.params)
+        #expect(store.selectedMessages.first?.delivery == .pending)
+        #expect(store.selectedDraft.text == "next input")
+    }
+}
+
 @Test func definitiveRejectionRestoresOnlyAnUntouchedEmptyComposer() throws {
     var untouched = displayStore()
     let first = try untouched.prepareSubmission(for: displaySession, policy: .null)

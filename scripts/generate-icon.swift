@@ -39,7 +39,7 @@ let document = repository.appendingPathComponent("App/AppIcon.icon")
 let directory = CommandLine.arguments.dropFirst().first.map { URL(fileURLWithPath: $0) }
     ?? repository.appendingPathComponent("build/icon-previews")
 try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-let supportsGenerations = try run(renderer, ["--help"]).contains("--design-generation")
+let supportsGenerations = ((try? run(renderer, ["--help"])) ?? "").contains("--design-generation")
 let generations: [String?] = supportsGenerations ? ["26", "27"] : [nil]
 for generation in generations {
     for rendition in ["Default", "Dark", "TintedDark"] {
@@ -53,6 +53,10 @@ for generation in generations {
             arguments += ["--tint-color", "0.08", "--tint-strength", "0.75"]
         }
         try run(renderer, arguments)
+        guard FileManager.default.fileExists(atPath: output.path) else {
+            throw NSError(domain: "IconPreview", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: "ictool did not write \(output.path)"])
+        }
         print(output.path)
     }
 }
