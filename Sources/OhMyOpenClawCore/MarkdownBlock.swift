@@ -12,11 +12,15 @@ public enum MarkdownBlock: Equatable, Sendable {
         func flushParagraph() {
             if !paragraph.isEmpty { blocks.append(.paragraph(paragraph.joined(separator: "\n"))); paragraph = [] }
         }
-        for line in text.components(separatedBy: "\n") {
+        let normalized = text.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
+        for line in normalized.components(separatedBy: "\n") {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             if let activeFence = fence {
                 if closesFence(line, fence: activeFence) { blocks.append(.code(language, code.joined(separator: "\n"))); code = []; fence = nil }
-                else { code.append(line) }
+                else {
+                    let spaces = min(activeFence.indentation, line.prefix(while: { $0 == " " }).count)
+                    code.append(String(line.dropFirst(spaces)))
+                }
                 continue
             }
             if let opening = opensFence(line) {
@@ -45,7 +49,7 @@ public enum MarkdownBlock: Equatable, Sendable {
         return blocks
     }
 
-    private struct Fence { let marker: Character; let count: Int }
+    private struct Fence { let marker: Character; let count: Int; let indentation: Int }
     private static func fenceLine(_ line: String) -> Substring? {
         let spaces = line.prefix(while: { $0 == " " }).count
         guard spaces <= 3 else { return nil }
@@ -57,7 +61,7 @@ public enum MarkdownBlock: Equatable, Sendable {
         guard count >= 3 else { return nil }
         let info = String(candidate.dropFirst(count)).trimmingCharacters(in: .whitespaces)
         guard marker != "`" || !info.contains("`") else { return nil }
-        return (Fence(marker: marker, count: count), info)
+        return (Fence(marker: marker, count: count, indentation: line.prefix(while: { $0 == " " }).count), info)
     }
     private static func closesFence(_ line: String, fence: Fence) -> Bool {
         guard let candidate = fenceLine(line) else { return false }

@@ -32,7 +32,18 @@ private actor StoredConversations: ConversationPersisting {
 
 private actor LifecycleGateway: GatewayServing {
     private(set) var disconnectCount = 0
-    func connect() async throws -> GatewayHello { GatewayHello(payload: .null) }
+    private let connectStarted = AsyncStream<Void>.makeStream()
+    private var connectWaiter: CheckedContinuation<Void, Never>?
+    private let holdConnection: Bool
+    init(holdConnection: Bool = false) { self.holdConnection = holdConnection }
+    func connect() async throws -> GatewayHello {
+        if holdConnection { await withCheckedContinuation { connectWaiter = $0; connectStarted.continuation.yield(()) } }
+        return GatewayHello(payload: .object(["snapshot": .object(["sessionDefaults": .object([
+            "defaultAgentId": .string("demo"), "mainSessionKey": .string("agent:demo:main"),
+        ])])]))
+    }
+    func waitForConnect() async { for await _ in connectStarted.stream { return } }
+    func releaseConnect() { connectWaiter?.resume(); connectWaiter = nil }
     func request(method: String, params: JSONValue) async throws -> JSONValue { .object([:]) }
     func events() async -> AsyncStream<GatewayEvent> { AsyncStream { $0.finish() } }
     func disconnect() async { disconnectCount += 1 }
@@ -48,6 +59,27 @@ private func savedDraft(_ text: String) -> ConversationStore {
 
 @Suite(.serialized)
 @MainActor struct LifecycleIsolationTests {
+    @Test func explicitDisconnectRemainsDisconnectedWhenTheHandshakeCompletesDuringItsSave() async {
+        let state = savedDraft("retained draft")
+        let disk = StoredConversations(state)
+        let gateway = LifecycleGateway(holdConnection: true)
+        let app = AppModel(service: gateway, initialStore: state, initialPersistence: disk, initialNamespace: "A")
+        let connecting = Task { await app.establishConnection() }
+        await gateway.waitForConnect()
+        await disk.pauseSaves()
+        let disconnecting = Task { await app.disconnect() }
+        await disk.waitForSave()
+        await gateway.releaseConnect()
+        await disk.waitForSave()
+        await disk.releaseSaves()
+        await disconnecting.value
+        await connecting.value
+        #expect(app.connectionState == .disconnected)
+        #expect(!app.canSend)
+        #expect(app.draftText == "retained draft")
+        #expect(await gateway.disconnectCount == 1)
+    }
+
     @Test func staleBackgroundSaveCannotDisconnectAfterForegroundReturns() async {
         let state = savedDraft("foreground draft")
         let disk = StoredConversations(state, holdSave: true)

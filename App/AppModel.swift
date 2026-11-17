@@ -194,6 +194,7 @@ final class AppModel {
         let generation = connectionGeneration
         do { try await persistNow() } catch { errorMessage = error.localizedDescription }
         guard generation == connectionGeneration else { return }
+        connectionState = .disconnected
         await retireConnection()
     }
 
