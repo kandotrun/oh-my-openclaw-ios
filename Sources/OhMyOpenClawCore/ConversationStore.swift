@@ -291,6 +291,7 @@ public struct ConversationStore: Codable, Sendable {
         if let serverID = payload["sessionId"].stringValue, let physical = target.sessionID, serverID != physical { return 0 }
         let previous = transcripts[target.id] ?? []
         var rows = Self.parseMessages(payload["messages"].arrayValue ?? [], fallbackPrefix: "history")
+        let receipts = payload["inputReceipts"].arrayValue ?? []
         var olderRows: [ChatMessage] = []
         if preservingOlderHistory, payload["hasMore"].boolValue == true, let firstID = rows.first?.id,
            let boundary = previous.firstIndex(where: { $0.id == firstID }) {
@@ -308,15 +309,17 @@ public struct ConversationStore: Codable, Sendable {
                 // The failed projection's Retry button addresses the durable local input.
                 row.id = submission.message.id
             }
+            let consumedEventID = row.runID.flatMap { runID in
+                receipts.first { $0["runId"].stringValue == runID }?["consumedByEventId"].stringValue
+            }
             let alreadyProjected = (olderRows + rows).contains { existing in
                 guard existing.role == row.role else { return false }
                 if let source = row.sourceID, existing.sourceID == source { return true }
                 guard row.role == .user, let key = row.idempotencyKey else { return false }
-                return Self.matchesSubmission(existing, runID: key)
+                return Self.matchesSubmission(existing, runID: key, consumedEventID: consumedEventID)
             }
             if !alreadyProjected { rows.append(row) }
         }
-        let receipts = payload["inputReceipts"].arrayValue ?? []
         var submissionOrder: [String: Int] = [:]
         for (index, row) in previous.enumerated() where row.role == .user {
             if let runID = row.runID, submissionOrder[runID] == nil { submissionOrder[runID] = index }

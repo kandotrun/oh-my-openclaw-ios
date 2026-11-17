@@ -80,6 +80,50 @@ private func userProjection(eventID: String, key: String, runID: String? = nil) 
     #expect(store.pending[sent.id] == nil)
 }
 
+@Test func consumedReceiptDeduplicatesStaleCustodyWithoutMergingTheNextIdenticalSend() throws {
+    for hasConsumedEventID in [true, false] {
+        var store = displayStore()
+        let first = try store.prepareSubmission(for: displaySession, policy: .null)
+        store.acknowledge(first.id)
+        store.setDraft(ComposerDraft(text: "same input"), for: displaySession.id)
+        let next = try store.prepareSubmission(for: displaySession, policy: .null)
+        let canonical: JSONValue = .object([
+            "role": .string("user"), "content": .string("same input"),
+            "__openclaw": .object(["id": .string("canonical-user")]),
+        ])
+        func custody(_ submission: PendingSubmission, eventID: String) -> JSONValue {
+            .object([
+                "id": .string(eventID), "runId": .string(submission.id), "state": .string("pending"),
+                "message": .object([
+                    "role": .string("user"), "content": .string("same input"),
+                    "__openclaw": .object(["id": .string(eventID)]),
+                ]),
+            ])
+        }
+        var receipt: [String: JSONValue] = ["runId": .string(first.id), "state": .string("consumed")]
+        if hasConsumedEventID { receipt["consumedByEventId"] = .string("canonical-user") }
+        // Pending custody can be read before consumption, followed by newer receipts
+        // and canonical history. Equal text in the next send has a separate identity.
+        let history: JSONValue = .object([
+            "sessionId": .string("physical"), "messages": .array([canonical]),
+            "pendingInputs": .object(["items": .array([
+                custody(first, eventID: "pending:first"), custody(next, eventID: "pending:next"),
+            ])]),
+            "inputReceipts": .array([.object(receipt), .object([
+                "runId": .string(next.id), "state": .string("pending"),
+            ])]),
+        ])
+        store.applyHistory(history, for: displaySession)
+        store.applyHistory(history, for: displaySession)
+        let rows = store.selectedMessages.filter { $0.role == .user }
+        #expect(rows.map(\.sourceID) == (hasConsumedEventID
+            ? ["canonical-user", "pending:next"]
+            : ["canonical-user", "pending:first", "pending:next"]))
+        #expect(rows.filter { $0.idempotencyKey == next.id }.count == 1)
+        #expect(rows.allSatisfy { $0.text == "same input" })
+    }
+}
+
 @Test func pendingCustodyProjectionReplacesTheLocalBubbleWithoutAReceipt() throws {
     var store = displayStore()
     let sent = try store.prepareSubmission(for: displaySession, policy: .null)
