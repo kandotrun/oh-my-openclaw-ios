@@ -98,7 +98,7 @@ final class AppModel {
     init(service: (any GatewayServing)? = nil, initialStore: ConversationStore = ConversationStore(), policy: JSONValue = .null,
          initialPersistence: (any ConversationPersisting)? = nil, initialNamespace: String? = nil,
          persistenceFactory: @escaping @Sendable (String) throws -> any ConversationPersisting = { try ConversationPersistence(namespace: $0) },
-         profileRepository: any GatewayProfilePersisting = DefaultsGatewayProfileRepository(),
+         profileRepository: any GatewayProfilePersisting = LocalGatewayProfileRepository(),
          connectionAccess: GatewayConnectionAccess = .live) {
         self.service = service; self.store = initialStore
         self.profileRepository = profileRepository; self.connectionAccess = connectionAccess
@@ -152,9 +152,61 @@ final class AppModel {
         } catch { errorMessage = error.localizedDescription }
     }
 
+    func deleteGateway(_ profile: SavedGateway) async -> Bool {
+        guard !changingConnection, connectionState != .connecting, !inBackground, !Task.isCancelled else { return false }
+        notice = nil
+        let previousState = connectionState
+        let transaction = endpoint?.absoluteString == profile.endpoint ? beginConnectionSwitch() : nil
+        defer {
+            if let transaction {
+                if connectionSwitch == transaction, connectionState == .connecting { connectionState = previousState }
+                finishConnectionSwitch()
+            }
+        }
+        do {
+            try loadProfiles()
+            guard savedGateways.contains(where: { $0.id == profile.id }) else { return true }
+            if let transaction {
+                _ = try await persistForSwitch(transaction)
+                try validateConnectionSwitch(transaction)
+            }
+
+            let key = credentialKey(try profile.url)
+            var profiles = gatewayProfiles; profiles.remove(endpoint: profile.endpoint)
+            try profileRepository.save(profiles)
+            do { try connectionAccess.delete(key) }
+            catch {
+                try profileRepository.save(gatewayProfiles)
+                throw error
+            }
+            finishCredentialRemoval(&profiles)
+            gatewayProfiles = profiles
+
+            if transaction != nil {
+                reconnectTask?.cancel(); autoConnect = false; endpoint = nil
+                connectionState = .disconnected; errorMessage = nil
+                replaceStore(ConversationStore(), persistence: nil, namespace: nil)
+                await retireConnection()
+            }
+            return true
+        } catch is CancellationError { return false }
+        catch { notice = error.localizedDescription; return false }
+    }
+
     private func loadProfiles() throws {
         guard !profilesLoaded else { return }
-        gatewayProfiles = try profileRepository.load(); profilesLoaded = true
+        var profiles = try profileRepository.load()
+        if let endpoint = profiles.pendingCredentialRemoval {
+            try connectionAccess.delete(credentialKey(try SavedGateway.exactURL(endpoint)))
+            finishCredentialRemoval(&profiles)
+        }
+        gatewayProfiles = profiles; profilesLoaded = true
+    }
+
+    private func finishCredentialRemoval(_ profiles: inout GatewayProfiles) {
+        profiles.pendingCredentialRemoval = nil
+        // If saving fails, launch can retry the idempotent Keychain removal from the saved marker.
+        try? profileRepository.save(profiles)
     }
 
     func connect(urlText: String, secret: String, password: Bool, setupCode: String, alias: String? = nil) async {
@@ -854,9 +906,12 @@ final class AppModel {
         if persistenceRevision != savedRevision { _ = try await persistForSwitch(transaction) }
         try validateConnectionSwitch(transaction)
         // Publish the owner and its state together, after all outgoing edits are durable.
+        replaceStore(loaded, persistence: incoming, namespace: key)
+    }
+    private func replaceStore(_ state: ConversationStore, persistence: (any ConversationPersisting)?, namespace: String?) {
         saveTask?.cancel(); saveTask = nil
-        persistence = incoming; persistenceNamespace = key; persistenceRevision = 0
-        store = loaded
+        self.persistence = persistence; persistenceNamespace = namespace; persistenceRevision = 0
+        store = state
         store.retireTransientState()
         promptRecords = []; promptTargets = [:]; models = []; streamRevisions = [:]; sessionRevisions = [:]; pendingHistoryRefresh = []
     }

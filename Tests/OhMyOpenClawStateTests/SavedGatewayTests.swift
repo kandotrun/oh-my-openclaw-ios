@@ -15,6 +15,10 @@ private func gatewayHash(_ text: String) -> String {
     SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
 }
 
+private func profileFile(_ suite: String) -> URL {
+    FileManager.default.temporaryDirectory.appendingPathComponent(suite + ".json")
+}
+
 private let sharedSession = ChatSession(key: "agent:shared:main", agentID: "shared", sessionID: "same-physical-id", title: "Main", isMain: true)
 private func gatewayStore(_ text: String) -> ConversationStore {
     var store = ConversationStore(); store.upsertSession(sharedSession); store.selectedID = sharedSession.id
@@ -92,12 +96,17 @@ private actor SavedGatewayService: GatewayServing {
 
 @MainActor private final class SavedConnectionFixture {
     var credentials: [String: GatewayCredentials] = [:]
+    var deleteError: GatewayFailure?
     var reads: [String] = []
     var made: [(String, GatewayCredentials)] = []
     var services: [String: SavedGatewayService] = [:]
     var access: GatewayConnectionAccess {
         GatewayConnectionAccess(read: { self.reads.append($0); return self.credentials[$0] },
                                 write: { self.credentials[$1] = $0 },
+                                delete: { key in
+                                    if let error = self.deleteError { throw error }
+                                    self.credentials.removeValue(forKey: key)
+                                },
                                 makeService: { url, credentials in
                                     self.made.append((url.absoluteString, credentials))
                                     return try #require(self.services[url.absoluteString])
@@ -134,7 +143,9 @@ private actor SavedGatewayService: GatewayServing {
         defer { defaults.removePersistentDomain(forName: suite) }
         let exact = "wss://Legacy.Example:443/deployment%2Fpath"
         defaults.set(exact, forKey: "lastGateway")
-        let repository = DefaultsGatewayProfileRepository(defaults: defaults)
+        let file = profileFile(suite)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let repository = LocalGatewayProfileRepository(defaults: defaults, file: file)
         let profiles = try repository.load()
         #expect(profiles.profiles.count == 1)
         #expect(profiles.lastActiveEndpoint == exact)
@@ -148,7 +159,31 @@ private actor SavedGatewayService: GatewayServing {
         let defaults = try #require(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
         defaults.set("wss://gateway.example/?token=synthetic", forKey: "lastGateway")
-        #expect(try DefaultsGatewayProfileRepository(defaults: defaults).load().profiles.isEmpty)
+        let file = profileFile(suite)
+        defer { try? FileManager.default.removeItem(at: file) }
+        #expect(try LocalGatewayProfileRepository(defaults: defaults, file: file).load().profiles.isEmpty)
+    }
+
+    @Test func profileRemovalIsReadableFromDiskOverExistingPreferences() throws {
+        let suite = "SavedGatewayTests." + UUID().uuidString
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        let file = profileFile(suite)
+        defer { defaults.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: file) }
+        let url = try #require(URL(string: "wss://gateway.example/"))
+        var original = GatewayProfiles()
+        try original.activate(url, alias: "Existing Gateway")
+        defaults.set(try JSONEncoder().encode(original), forKey: "savedGateways")
+        let repository = LocalGatewayProfileRepository(defaults: defaults, file: file)
+        var staged = try repository.load()
+        #expect(staged == original)
+
+        staged.remove(endpoint: url.absoluteString)
+        try repository.save(staged)
+
+        let reopened = try LocalGatewayProfileRepository(defaults: defaults, file: file).load()
+        #expect(reopened.profiles.isEmpty)
+        #expect(reopened.lastActiveEndpoint == nil)
+        #expect(reopened.pendingCredentialRemoval == url.absoluteString)
     }
 
     @Test func aliasesSurviveReconnectAndExplicitBlankRenameRestoresHostname() throws {
@@ -181,6 +216,96 @@ private actor SavedGatewayService: GatewayServing {
 }
 
 @MainActor @Suite struct SavedGatewayConnectionTests {
+    @Test func deletingAnInactiveGatewayKeepsTheActiveConnectionAndDraft() async throws {
+        let h = try SavedGatewayHarness()
+        let activeProfile = h.profileA
+        let inactiveProfile = h.profileB
+        let active = try #require(h.connections.services[h.a.absoluteString])
+        await h.app.restore()
+        h.app.draftText = "A edited before deletion"
+
+        #expect(await h.app.deleteGateway(inactiveProfile))
+        #expect(h.app.savedGateways == [activeProfile])
+        #expect(h.repository.state.profiles == [activeProfile])
+        #expect(h.repository.state.lastActiveEndpoint == h.a.absoluteString)
+        #expect(h.connections.credentials["gateway:" + gatewayHash(h.b.absoluteString)] == nil)
+        #expect(h.connections.credentials["gateway:" + gatewayHash(h.a.absoluteString)]?.deviceToken == "synthetic-a")
+        #expect(h.app.connectionState == .connected)
+        #expect(h.app.activeGateway == activeProfile)
+        #expect(h.app.draftText == "A edited before deletion")
+        #expect(await active.disconnectCount == 0)
+        await h.app.disconnect()
+    }
+
+    @Test(arguments: [false, true])
+    func deletingTheActiveGatewayFlushesItsDraftAndClearsTheConnection(hasRemainingGateway: Bool) async throws {
+        let h = try SavedGatewayHarness()
+        let profile = h.profileA
+        let remaining = hasRemainingGateway ? [h.profileB] : []
+        if !hasRemainingGateway {
+            var profiles = GatewayProfiles()
+            try profiles.activate(h.a, alias: "Alpha")
+            h.repository.state = profiles
+        }
+        let active = try #require(h.connections.services[h.a.absoluteString])
+        await h.app.restore()
+        h.app.draftText = "A edited before deletion"
+        h.app.errorMessage = "Previous connection error"
+
+        #expect(await h.app.deleteGateway(profile))
+        #expect(await active.disconnectCount == 1)
+        #expect(await h.diskA.state.selectedDraft.text == "A edited before deletion")
+        #expect(h.app.connectionState == .disconnected)
+        #expect(h.app.errorMessage == nil)
+        #expect(h.app.endpoint == nil)
+        #expect(h.app.activeGateway == nil)
+        #expect(h.app.sessions.isEmpty)
+        #expect(h.app.savedGateways == remaining)
+        #expect(h.repository.state.profiles == remaining)
+        #expect(h.repository.state.lastActiveEndpoint == nil)
+        #expect(h.connections.credentials["gateway:" + gatewayHash(h.a.absoluteString)] == nil)
+        if hasRemainingGateway {
+            #expect(h.connections.credentials["gateway:" + gatewayHash(h.b.absoluteString)]?.password == "synthetic-b")
+        }
+        await h.app.foreground()
+        await h.app.restore()
+        #expect(h.connections.made.count == 1)
+        #expect(h.app.endpoint == nil)
+    }
+
+    @Test func restoreFinishesAnInterruptedCredentialRemoval() async throws {
+        let h = try SavedGatewayHarness()
+        var profiles = h.repository.state
+        profiles.remove(endpoint: h.a.absoluteString)
+        h.repository.state = profiles
+
+        await h.app.restore()
+
+        #expect(h.app.savedGateways == [h.profileB])
+        #expect(h.repository.state.pendingCredentialRemoval == nil)
+        #expect(h.connections.credentials["gateway:" + gatewayHash(h.a.absoluteString)] == nil)
+        #expect(h.connections.credentials["gateway:" + gatewayHash(h.b.absoluteString)]?.password == "synthetic-b")
+        #expect(h.connections.made.isEmpty)
+    }
+
+    @Test func failingToRemoveCredentialsKeepsTheActiveGateway() async throws {
+        let h = try SavedGatewayHarness()
+        let profile = h.profileA
+        let active = try #require(h.connections.services[h.a.absoluteString])
+        await h.app.restore()
+        let previous = h.repository.state
+        h.connections.deleteError = GatewayFailure(code: "KEYCHAIN_ERROR", message: "Synthetic failure")
+
+        #expect(await h.app.deleteGateway(profile) == false)
+        #expect(h.repository.state == previous)
+        #expect(h.app.savedGateways == previous.profiles)
+        #expect(h.connections.credentials["gateway:" + gatewayHash(h.a.absoluteString)]?.deviceToken == "synthetic-a")
+        #expect(h.app.connectionState == .connected)
+        #expect(h.app.activeGateway == profile)
+        #expect(await active.disconnectCount == 0)
+        await h.app.disconnect()
+    }
+
     @Test func restoreAndSwitchReuseExactCredentialKeysAndIsolateIdenticalSessionIDs() async throws {
         let h = try SavedGatewayHarness()
         await h.app.restore()
@@ -240,7 +365,9 @@ private actor SavedGatewayService: GatewayServing {
         let defaults = try #require(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
         defaults.set(exact, forKey: "lastGateway")
-        let repository = DefaultsGatewayProfileRepository(defaults: defaults)
+        let file = profileFile(suite)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let repository = LocalGatewayProfileRepository(defaults: defaults, file: file)
         let connections = SavedConnectionFixture()
         connections.credentials["gateway:" + gatewayHash(exact)] = GatewayCredentials(deviceToken: "synthetic-legacy")
         connections.services[exact] = SavedGatewayService("Legacy Agent")

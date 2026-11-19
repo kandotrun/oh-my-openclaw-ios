@@ -3,6 +3,7 @@ import OhMyOpenClawCore
 
 struct OnboardingView: View {
     @Bindable var model: AppModel
+    var manageGateways: (() -> Void)? = nil
     @State private var urlText = ""
     @State private var alias = ""
     @State private var secret = ""
@@ -31,7 +32,13 @@ struct OnboardingView: View {
                 if !model.savedGateways.isEmpty {
                     VStack(alignment: .leading, spacing: 10) {
                         Text("保存済みの Gateway").font(.subheadline.weight(.medium))
-                        GatewaySelector(model: model, addGateway: clearForm)
+                        HStack(spacing: 12) {
+                            GatewaySelector(model: model, addGateway: clearForm)
+                            if let manageGateways {
+                                Button("管理", action: manageGateways)
+                                    .accessibilityLabel("保存済みの Gateway を管理")
+                            }
+                        }
                         Text("保存した接続情報で切り替えられます。")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
