@@ -24,7 +24,7 @@ struct RootView: View {
                         drawer(width: layout.sidebarWidth)
                     }
                     Group {
-                        if model.sessions.isEmpty { OnboardingView(model: model) }
+                        if model.sessions.isEmpty { OnboardingView(model: model, manageGateways: { showSettings = true }) }
                         else {
                             ChatScreen(model: model, sidebarVisible: layout.sidebarVisible, openMenu: {
                                 if layout.isWide { withAnimation(animation) { sidebarCollapsed.toggle() } }
@@ -250,7 +250,7 @@ struct RootView: View {
                             NavigationLink {
                                 GatewayProfileSettings(model: model, profile: profile)
                             } label: {
-                                Image(systemName: "pencil").accessibilityLabel("\(profile.label) の名前を変更")
+                                Image(systemName: "pencil").accessibilityLabel("\(profile.label) を編集")
                             }
                             .fixedSize()
                         }

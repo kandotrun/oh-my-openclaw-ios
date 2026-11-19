@@ -43,7 +43,12 @@ struct GatewayProfileSettings: View {
     @Bindable var model: AppModel
     let endpoint: String
     @State private var alias: String
+    @State private var confirmingDeletion = false
+    @State private var deleting = false
+    @State private var deletionError: String?
     @Environment(\.dismiss) private var dismiss
+
+    private var profile: SavedGateway? { model.savedGateways.first { $0.endpoint == endpoint } }
 
     init(model: AppModel, profile: SavedGateway) {
         self.model = model
@@ -62,17 +67,40 @@ struct GatewayProfileSettings: View {
             Section("Gateway URL") {
                 Text(endpoint).font(.footnote).textSelection(.enabled)
             }
+            Section {
+                Button("Gateway を削除", role: .destructive) { confirmingDeletion = true }
+                    .disabled(profile == nil || model.changingConnection || model.connectionState == .connecting || deleting)
+                    .accessibilityIdentifier("deleteGateway")
+            } footer: {
+                if let deletionError { Text(deletionError).foregroundStyle(.red) }
+            }
         }
-        .navigationTitle("Gateway の名前")
+        .navigationTitle("Gateway を編集")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {
                 Button("保存") {
-                    guard let profile = model.savedGateways.first(where: { $0.endpoint == endpoint }) else { return }
+                    guard let profile else { return }
                     model.renameGateway(profile, alias: alias)
                     dismiss()
                 }
+                .disabled(profile == nil || deleting)
             }
+        }
+        .alert("Gateway を削除しますか？", isPresented: $confirmingDeletion, presenting: profile) { profile in
+            Button("削除", role: .destructive) {
+                deletionError = nil
+                deleting = true
+                Task {
+                    let removed = await model.deleteGateway(profile)
+                    deleting = false
+                    if removed { dismiss() }
+                    else { deletionError = model.notice ?? "Gateway を削除できませんでした。もう一度お試しください。" }
+                }
+            }
+            Button("キャンセル", role: .cancel) {}
+        } message: { profile in
+            Text("「\(profile.label)」の接続先と認証情報をこの端末から削除します。")
         }
     }
 }

@@ -44,6 +44,7 @@ struct SavedGateway: Codable, Equatable, Identifiable, Sendable {
 struct GatewayProfiles: Codable, Equatable, Sendable {
     private(set) var profiles: [SavedGateway] = []
     private(set) var lastActiveEndpoint: String?
+    var pendingCredentialRemoval: String?
     var useDemo = false
 
     mutating func activate(_ url: URL, alias: String? = nil) throws {
@@ -60,6 +61,12 @@ struct GatewayProfiles: Codable, Equatable, Sendable {
         guard let index = profiles.firstIndex(where: { $0.endpoint == endpoint }) else { return }
         profiles[index].rename(alias)
     }
+
+    mutating func remove(endpoint: String) {
+        profiles.removeAll { $0.endpoint == endpoint }
+        if lastActiveEndpoint == endpoint { lastActiveEndpoint = nil }
+        pendingCredentialRemoval = endpoint
+    }
 }
 
 @MainActor
@@ -69,26 +76,39 @@ protocol GatewayProfilePersisting {
 }
 
 @MainActor
-final class DefaultsGatewayProfileRepository: GatewayProfilePersisting {
-    static let storageKey = "savedGateways"
+final class LocalGatewayProfileRepository: GatewayProfilePersisting {
     private let defaults: UserDefaults
-    init(defaults: UserDefaults = .standard) { self.defaults = defaults }
+    private let file: URL?
+    init(defaults: UserDefaults = .standard, file: URL? = nil) {
+        self.defaults = defaults; self.file = file
+    }
 
     func load() throws -> GatewayProfiles {
-        if let data = defaults.data(forKey: Self.storageKey) {
-            return try JSONDecoder().decode(GatewayProfiles.self, from: data)
-        }
+        do { return try JSONDecoder().decode(GatewayProfiles.self, from: Data(contentsOf: profileFile())) }
+        catch let error as CocoaError where error.code == .fileReadNoSuchFile { }
+
         var profiles = GatewayProfiles()
-        if let legacy = defaults.string(forKey: "lastGateway"), let url = try? SavedGateway.exactURL(legacy) {
-            try profiles.activate(url)
+        if let data = defaults.data(forKey: "savedGateways") {
+            profiles = try JSONDecoder().decode(GatewayProfiles.self, from: data)
+        } else {
+            if let legacy = defaults.string(forKey: "lastGateway"), let url = try? SavedGateway.exactURL(legacy) {
+                try profiles.activate(url)
+            }
+            profiles.useDemo = defaults.bool(forKey: "useDemo")
         }
-        profiles.useDemo = defaults.bool(forKey: "useDemo")
         try save(profiles)
         return profiles
     }
 
     func save(_ profiles: GatewayProfiles) throws {
-        defaults.set(try JSONEncoder().encode(profiles), forKey: Self.storageKey)
+        // The deletion marker must survive app termination before Keychain removal can begin.
+        try JSONEncoder().encode(profiles).write(to: profileFile(), options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+    }
+
+    private func profileFile() throws -> URL {
+        if let file { return file }
+        return try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+            .appendingPathComponent("gateway-profiles.json")
     }
 }
 
@@ -97,11 +117,13 @@ final class DefaultsGatewayProfileRepository: GatewayProfilePersisting {
 struct GatewayConnectionAccess {
     var read: (String) throws -> GatewayCredentials?
     var write: (GatewayCredentials, String) throws -> Void
+    var delete: (String) throws -> Void
     var makeService: (URL, GatewayCredentials) throws -> any GatewayServing
 
     static var live: Self {
         Self(read: { try CredentialStore.read(GatewayCredentials.self, key: $0) },
              write: { try CredentialStore.write($0, key: $1) },
+             delete: { try CredentialStore.delete(key: $0) },
              makeService: { url, credentials in
                  let identity: DeviceIdentity
                  if let data = try CredentialStore.read(Data.self, key: "device-identity") {
